@@ -20,11 +20,11 @@ from PIL import Image, ImageTk
 import threading
 import time
 import sys
-from mouse_x11 import mouse_move, mouse_down, mouse_up, get_mouse_pos, is_escape_pressed
 from detection import detect_art_bounds, detect_edges
 from crop_dialog import CropDialog
 from contours import extract_contours, skeletonize
 from suggest import compute_suggested
+from drawing import DrawEngine
 
 MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
 
@@ -40,10 +40,8 @@ class LineTracer:
         self.gray_image = None
         self.cropped_image = None
         self.contours = []
-        self.drawing = False
-        self.cancelled = False
         self._preview_timer = None
-        self._escape_was_pressed = False
+        self.draw_engine = DrawEngine(on_status=self._update_status)
 
         # (var_name, var, slider, entry, is_int, from_, to, step)
         self._widgets = []
@@ -501,94 +499,24 @@ class LineTracer:
         if not self.contours:
             self.lbl_status.config(text="No contours to draw.")
             return
-        self.cancelled = False
-        self.drawing = True
-        threading.Thread(target=self._draw_thread, daemon=True).start()
-
-    def _draw_thread(self):
-        delay = self.delay_before.get()
-        for i in range(delay, 0, -1):
-            if self._should_cancel():
-                self._update_status("Cancelled.")
-                self.drawing = False
-                return
-            self._update_status(f"Starting in {i}... switch to your canvas! (Esc to cancel)")
-            if not self._sleep_with_cancel(1.0):
-                self._update_status("Cancelled.")
-                self.drawing = False
-                return
-
-        s = self.scale.get()
-        spd = self.speed.get()
-        btn = 1 if self.mouse_button.get() == "left" else 3
-
-        if self.relative_offset.get():
-            mx, my = get_mouse_pos()
-            max_y = max(c[:, 1].max() for c in self.contours)
-            ox, oy = mx, my - int(max_y * s)
-        else:
-            ox, oy = self.offset_x.get(), self.offset_y.get()
-
-        total = len(self.contours)
-        for idx, contour in enumerate(self.contours):
-            if self._should_cancel():
-                break
-            self._update_status(f"Drawing contour {idx + 1}/{total}...")
-
-            pts = contour.astype(np.float64) * s
-            pts[:, 0] += ox
-            pts[:, 1] += oy
-
-            mouse_move(pts[0][0], pts[0][1])
-            if not self._sleep_with_cancel(0.01):
-                break
-
-            mouse_down(btn)
-            for pt in pts[1:]:
-                if self._should_cancel():
-                    mouse_up(btn)
-                    break
-                mouse_move(pt[0], pt[1])
-                if spd > 0 and not self._sleep_with_cancel(spd):
-                    mouse_up(btn)
-                    break
-            mouse_up(btn)
-            if self.cancelled:
-                break
-            if not self._sleep_with_cancel(0.01):
-                break
-
-        if not self.cancelled:
-            self._update_status("Drawing complete!")
-        else:
-            self._update_status("Drawing cancelled.")
-        self.drawing = False
+        params = {
+            "mouse_button": self.mouse_button.get(),
+            "speed": self.speed.get(),
+            "offset_x": self.offset_x.get(),
+            "offset_y": self.offset_y.get(),
+            "scale": self.scale.get(),
+            "relative_to_mouse": self.relative_offset.get(),
+            "delay_before_start": self.delay_before.get(),
+        }
+        threading.Thread(target=self.draw_engine.run, args=(self.contours, params), daemon=True).start()
 
     def _update_status(self, text):
         self.root.after(0, lambda: self.lbl_status.config(text=text))
 
-    def _should_cancel(self):
-        if self.cancelled:
-            return True
-        esc_pressed = is_escape_pressed()
-        if esc_pressed and not self._escape_was_pressed:
-            self.cancelled = True
-        self._escape_was_pressed = esc_pressed
-        return self.cancelled
-
-    def _sleep_with_cancel(self, duration, interval=0.02):
-        end_time = time.monotonic() + duration
-        while time.monotonic() < end_time:
-            if self._should_cancel():
-                return False
-            time.sleep(min(interval, end_time - time.monotonic()))
-        return not self._should_cancel()
-
     def _cancel(self):
-        self.cancelled = True
+        self.draw_engine.cancel()
 
     def _quit(self):
-        self.cancelled = True
         self.root.destroy()
         sys.exit(0)
 
