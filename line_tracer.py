@@ -23,6 +23,7 @@ import sys
 from mouse_x11 import mouse_move, mouse_down, mouse_up, get_mouse_pos, is_escape_pressed
 from detection import detect_art_bounds, detect_edges
 from crop_dialog import CropDialog
+from contours import extract_contours, skeletonize
 
 MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
 
@@ -488,7 +489,7 @@ class LineTracer:
         if self.cropped_image is None:
             return
 
-        edges = detect_edges(
+        self.contours = extract_contours(
             self.cropped_image,
             mode=self.detect_mode.get(),
             threshold=self.threshold.get(),
@@ -498,41 +499,16 @@ class LineTracer:
             adaptive_c=self.adaptive_c.get(),
             blur_radius=self.blur_radius.get(),
             morph_iterations=self.morph_iter.get(),
+            min_length=self.min_contour_len.get(),
+            epsilon=self.simplify.get(),
+            use_skeleton=self.use_skeleton.get(),
         )
-
-        if self.use_skeleton.get():
-            edges = self._skeletonize(edges)
-
-        contours_raw, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-        min_len = self.min_contour_len.get()
-        eps = self.simplify.get()
-
-        self.contours = []
-        for c in contours_raw:
-            if len(c) < min_len:
-                continue
-            if eps > 0:
-                approx = cv2.approxPolyDP(c, eps, closed=False)
-            else:
-                approx = c
-            self.contours.append(approx.reshape(-1, 2))
 
         total_points = sum(len(c) for c in self.contours)
         self.lbl_contours.config(text=f"Contours: {len(self.contours)}, Total points: {total_points}")
 
     def _skeletonize(self, binary):
-        skel = np.zeros_like(binary)
-        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-        temp = binary.copy()
-        while True:
-            eroded = cv2.erode(temp, element)
-            opened = cv2.dilate(eroded, element)
-            subset = cv2.subtract(temp, opened)
-            skel = cv2.bitwise_or(skel, subset)
-            temp = eroded.copy()
-            if cv2.countNonZero(temp) == 0:
-                break
-        return skel
+        return skeletonize(binary)
 
     # ── Preview ──
 
