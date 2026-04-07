@@ -24,6 +24,7 @@ from mouse_x11 import mouse_move, mouse_down, mouse_up, get_mouse_pos, is_escape
 from detection import detect_art_bounds, detect_edges
 from crop_dialog import CropDialog
 from contours import extract_contours, skeletonize
+from suggest import compute_suggested
 
 MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
 
@@ -42,7 +43,6 @@ class LineTracer:
         self.drawing = False
         self.cancelled = False
         self._preview_timer = None
-        self._suggested = {}
         self._escape_was_pressed = False
 
         # (var_name, var, slider, entry, is_int, from_, to, step)
@@ -387,81 +387,16 @@ class LineTracer:
             self.cropped_image = self.gray_image[y:y + ch, x:x + cw].copy()
             self.lbl_crop.config(text=f"Crop: ({x},{y}) {cw}x{ch}px from {w}x{h}px original")
 
-        self._compute_suggested()
         self._apply_suggested()
         self._extract_contours()
         if self.auto_preview.get():
             self._open_preview()
 
-    def _compute_suggested(self):
-        img = self.cropped_image
-        if img is None:
-            return
-        h, w = img.shape
-
-        # Otsu threshold
-        otsu_val, binary_otsu = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        otsu_val = max(1, min(254, int(otsu_val)))
-
-        ink_ratio = cv2.countNonZero(binary_otsu) / (h * w)
-
-        # Diagonal-based min contour length
-        diag = np.sqrt(h * h + w * w)
-        proposed_min = max(5, min(100, int(diag * 0.01)))
-
-        # Simplify based on ink density
-        if ink_ratio > 0.15:
-            proposed_eps = 2.0
-        elif ink_ratio > 0.05:
-            proposed_eps = 1.0
-        else:
-            proposed_eps = 0.5
-
-        # Detect image type for mode suggestion
-        mean, stddev = cv2.meanStdDev(img)
-        std = stddev[0][0]
-        lap_var = cv2.Laplacian(img, cv2.CV_64F).var()
-
-        if lap_var > 500 and std > 40:
-            proposed_mode = "Canny Edge"
-            proposed_blur = max(1, min(5, int(np.sqrt(lap_var) / 50)))
-            proposed_morph = 1
-            proposed_canny_lo = max(10, int(otsu_val * 0.3))
-            proposed_canny_hi = max(proposed_canny_lo + 20, int(otsu_val * 0.9))
-        elif std > 60 and 0.2 < ink_ratio < 0.8:
-            proposed_mode = "Adaptive Threshold"
-            proposed_blur = 1
-            proposed_morph = 1
-            proposed_canny_lo = 50
-            proposed_canny_hi = 150
-        else:
-            proposed_mode = "Threshold"
-            proposed_blur = 0
-            proposed_morph = 0
-            proposed_canny_lo = 50
-            proposed_canny_hi = 150
-
-        self._suggested = {
-            "threshold": otsu_val,
-            "min_contour_len": proposed_min,
-            "simplify": proposed_eps,
-            "detect_mode": proposed_mode,
-            "blur_radius": proposed_blur,
-            "morph_iter": proposed_morph,
-            "canny_lo": proposed_canny_lo,
-            "canny_hi": proposed_canny_hi,
-            "adaptive_block": 11,
-            "adaptive_c": 2,
-            "ink_ratio": ink_ratio,
-            "lap_var": lap_var,
-            "std": std,
-        }
-        self.btn_suggested.config(state="normal")
-
     def _apply_suggested(self):
-        if not self._suggested:
+        if self.cropped_image is None:
             return
-        s = self._suggested
+        s = compute_suggested(self.cropped_image)
+        self.btn_suggested.config(state="normal")
 
         self.detect_mode.set(s["detect_mode"])
         self.threshold.set(s["threshold"])
