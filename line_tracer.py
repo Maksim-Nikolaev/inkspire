@@ -25,6 +25,7 @@ from crop_dialog import CropDialog
 from contours import extract_contours, skeletonize
 from suggest import compute_suggested
 from drawing import DrawEngine
+from widgets import LinkedSliderEntry
 
 MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
 
@@ -43,8 +44,7 @@ class LineTracer:
         self._preview_timer = None
         self.draw_engine = DrawEngine(on_status=self._update_status)
 
-        # (var_name, var, slider, entry, is_int, from_, to, step)
-        self._widgets = []
+        self._widgets: dict[str, LinkedSliderEntry] = {}
 
         # Detection mode
         self.detect_mode = tk.StringVar(value="Auto")
@@ -77,104 +77,12 @@ class LineTracer:
         self._update_mode_visibility()
         self.root.mainloop()
 
-    # ── Linked slider + entry + step buttons ──
-
-    def _linked_slider_entry(self, parent, row, label, var, var_name,
-                              from_, to, resolution, width=8, pad=None):
-        if pad is None:
-            pad = {"padx": 6, "pady": 3}
-
-        is_int = isinstance(var, tk.IntVar)
-        step = resolution
-
-        lbl = ttk.Label(parent, text=label)
-        lbl.grid(row=row, column=0, sticky="w", **pad)
-
-        slider = tk.Scale(
-            parent, from_=from_, to=to, resolution=resolution,
-            orient="horizontal", showvalue=False,
-            command=lambda val, v=var, ii=is_int, vn=var_name: self._slider_cmd(val, vn, v, ii)
-        )
-        slider.set(var.get())
-        slider.grid(row=row, column=1, sticky="ew", **pad)
-
-        right = ttk.Frame(parent)
-        right.grid(row=row, column=2, sticky="w", **pad)
-
-        btn_down = ttk.Button(right, text="\u25bc", width=2,
-                              command=lambda: self._step_value(var_name, -step))
-        btn_down.pack(side="left")
-
-        entry = ttk.Entry(right, width=width)
-        entry.pack(side="left", padx=2)
-        entry.insert(0, str(var.get()))
-
-        btn_up = ttk.Button(right, text="\u25b2", width=2,
-                            command=lambda: self._step_value(var_name, step))
-        btn_up.pack(side="left")
-
-        entry.bind("<Return>", lambda ev, vn=var_name: self._entry_commit(vn))
-        entry.bind("<FocusOut>", lambda ev, vn=var_name: self._entry_commit(vn))
-
-        self._widgets.append((var_name, var, slider, entry, is_int, from_, to, step, lbl, right))
-        return slider, entry
-
-    def _slider_cmd(self, val, var_name, var, is_int):
-        v = int(float(val)) if is_int else round(float(val), 3)
-        var.set(v)
-        for vn, vr, sl, ent, ii, f, t, st, lb, rt in self._widgets:
-            if vn == var_name:
-                ent.delete(0, tk.END)
-                ent.insert(0, str(v))
-                break
-
-    def _entry_commit(self, var_name):
-        for vn, var, slider, entry, is_int, from_, to, step, lb, rt in self._widgets:
-            if vn == var_name:
-                try:
-                    raw = entry.get().strip()
-                    v = int(raw) if is_int else round(float(raw), 3)
-                    v = max(from_, min(to, v))
-                except ValueError:
-                    v = var.get()
-                var.set(v)
-                slider.set(v)
-                entry.delete(0, tk.END)
-                entry.insert(0, str(v))
-                break
-
-    def _step_value(self, var_name, delta):
-        for vn, var, slider, entry, is_int, from_, to, step, lb, rt in self._widgets:
-            if vn == var_name:
-                cur = var.get()
-                nv = int(cur + delta) if is_int else round(cur + delta, 3)
-                nv = max(from_, min(to, nv))
-                var.set(nv)
-                slider.set(nv)
-                entry.delete(0, tk.END)
-                entry.insert(0, str(nv))
-                break
-
     def _sync_all_widgets(self):
-        for vn, var, slider, entry, is_int, f, t, st, lb, rt in self._widgets:
-            v = var.get()
-            slider.set(v)
-            entry.delete(0, tk.END)
-            entry.insert(0, str(v))
+        for w in self._widgets.values():
+            w.sync()
 
     def _set_widget_visible(self, var_name, visible):
-        """Show/hide a slider row by var_name."""
-        for vn, var, slider, entry, is_int, f, t, st, lbl, right in self._widgets:
-            if vn == var_name:
-                if visible:
-                    lbl.grid()
-                    slider.grid()
-                    right.grid()
-                else:
-                    lbl.grid_remove()
-                    slider.grid_remove()
-                    right.grid_remove()
-                break
+        self._widgets[var_name].set_visible(visible)
 
     # ── Mode-dependent visibility ──
 
@@ -247,20 +155,25 @@ class LineTracer:
         frame_det.pack(fill="x", **pad)
 
         row = 0
-        self._linked_slider_entry(frame_det, row, "Threshold (1-254):",
-                                   self.threshold, "threshold", 1, 254, 1, pad=pad)
+        self._widgets["threshold"] = LinkedSliderEntry(
+            frame_det, row, "Threshold (1-254):", self.threshold, "threshold",
+            is_int=True, from_=1, to=254, step=1, pad=pad)
         row += 1
-        self._linked_slider_entry(frame_det, row, "Canny low:",
-                                   self.canny_lo, "canny_lo", 1, 300, 1, pad=pad)
+        self._widgets["canny_lo"] = LinkedSliderEntry(
+            frame_det, row, "Canny low:", self.canny_lo, "canny_lo",
+            is_int=True, from_=1, to=300, step=1, pad=pad)
         row += 1
-        self._linked_slider_entry(frame_det, row, "Canny high:",
-                                   self.canny_hi, "canny_hi", 1, 500, 1, pad=pad)
+        self._widgets["canny_hi"] = LinkedSliderEntry(
+            frame_det, row, "Canny high:", self.canny_hi, "canny_hi",
+            is_int=True, from_=1, to=500, step=1, pad=pad)
         row += 1
-        self._linked_slider_entry(frame_det, row, "Adaptive block size:",
-                                   self.adaptive_block, "adaptive_block", 3, 99, 2, pad=pad)
+        self._widgets["adaptive_block"] = LinkedSliderEntry(
+            frame_det, row, "Adaptive block size:", self.adaptive_block, "adaptive_block",
+            is_int=True, from_=3, to=99, step=2, pad=pad)
         row += 1
-        self._linked_slider_entry(frame_det, row, "Adaptive C:",
-                                   self.adaptive_c, "adaptive_c", -20, 20, 1, pad=pad)
+        self._widgets["adaptive_c"] = LinkedSliderEntry(
+            frame_det, row, "Adaptive C:", self.adaptive_c, "adaptive_c",
+            is_int=True, from_=-20, to=20, step=1, pad=pad)
 
         frame_det.columnconfigure(1, weight=1)
 
@@ -269,11 +182,13 @@ class LineTracer:
         frame_proc.pack(fill="x", **pad)
 
         row = 0
-        self._linked_slider_entry(frame_proc, row, "Blur radius (halftone):",
-                                   self.blur_radius, "blur_radius", 0, 20, 1, pad=pad)
+        self._widgets["blur_radius"] = LinkedSliderEntry(
+            frame_proc, row, "Blur radius (halftone):", self.blur_radius, "blur_radius",
+            is_int=True, from_=0, to=20, step=1, pad=pad)
         row += 1
-        self._linked_slider_entry(frame_proc, row, "Morph cleanup (iter):",
-                                   self.morph_iter, "morph_iter", 0, 10, 1, pad=pad)
+        self._widgets["morph_iter"] = LinkedSliderEntry(
+            frame_proc, row, "Morph cleanup (iter):", self.morph_iter, "morph_iter",
+            is_int=True, from_=0, to=10, step=1, pad=pad)
 
         frame_proc.columnconfigure(1, weight=1)
 
@@ -282,11 +197,13 @@ class LineTracer:
         frame_cont.pack(fill="x", **pad)
 
         row = 0
-        self._linked_slider_entry(frame_cont, row, "Min contour length:",
-                                   self.min_contour_len, "min_contour_len", 1, 500, 1, pad=pad)
+        self._widgets["min_contour_len"] = LinkedSliderEntry(
+            frame_cont, row, "Min contour length:", self.min_contour_len, "min_contour_len",
+            is_int=True, from_=1, to=500, step=1, pad=pad)
         row += 1
-        self._linked_slider_entry(frame_cont, row, "Simplify (epsilon):",
-                                   self.simplify, "simplify", 0.1, 10.0, 0.1, pad=pad)
+        self._widgets["simplify"] = LinkedSliderEntry(
+            frame_cont, row, "Simplify (epsilon):", self.simplify, "simplify",
+            is_int=False, from_=0.1, to=10.0, step=0.1, pad=pad)
         row += 1
         ttk.Checkbutton(frame_cont, text="Skeletonize (thin lines to 1px)",
                         variable=self.use_skeleton).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
@@ -302,8 +219,9 @@ class LineTracer:
         frame_draw.pack(fill="x", **pad)
 
         row = 0
-        self._linked_slider_entry(frame_draw, row, "Scale:",
-                                   self.scale, "scale", 0.10, 10.0, 0.01, pad=pad)
+        self._widgets["scale"] = LinkedSliderEntry(
+            frame_draw, row, "Scale:", self.scale, "scale",
+            is_int=False, from_=0.10, to=10.0, step=0.01, pad=pad)
         row += 1
         ttk.Label(frame_draw, text="Offset X (px):").grid(row=row, column=0, sticky="w", **pad)
         ttk.Entry(frame_draw, textvariable=self.offset_x, width=8).grid(row=row, column=1, sticky="w", **pad)
@@ -317,8 +235,9 @@ class LineTracer:
                         variable=self.relative_offset).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
 
         row += 1
-        self._linked_slider_entry(frame_draw, row, "Speed (s/point):",
-                                   self.speed, "speed", 0.0, 0.1, 0.001, pad=pad)
+        self._widgets["speed"] = LinkedSliderEntry(
+            frame_draw, row, "Speed (s/point):", self.speed, "speed",
+            is_int=False, from_=0.0, to=0.1, step=0.001, pad=pad)
 
         row += 1
         ttk.Label(frame_draw, text="Mouse button:").grid(row=row, column=0, sticky="w", **pad)
