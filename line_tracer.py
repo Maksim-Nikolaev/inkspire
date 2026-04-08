@@ -26,6 +26,7 @@ from contours import extract_contours, skeletonize
 from suggest import compute_suggested
 from drawing import DrawEngine
 from widgets import LinkedSliderEntry
+from preview import PreviewWindow
 
 MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
 
@@ -69,8 +70,7 @@ class LineTracer:
         self.relative_offset = tk.BooleanVar(value=True)
         self.auto_preview = tk.BooleanVar(value=True)
 
-        self._preview_win = None
-        self._preview_label = None
+        self.preview = None
 
         self._build_gui()
         self._setup_traces()
@@ -125,8 +125,8 @@ class LineTracer:
     def _update_live_preview(self):
         self._preview_timer = None
         self._extract_contours()
-        if self._preview_win is not None and self._preview_win.winfo_exists():
-            self._render_preview_in_window()
+        if self.preview and self.preview.is_open():
+            self.preview.render(self.contours, self.scale.get(), self.cropped_image.shape[:2])
 
     # ── GUI build ──
 
@@ -369,46 +369,9 @@ class LineTracer:
         if not self.contours:
             self.lbl_status.config(text="No contours found. Adjust parameters.")
             return
-        if self._preview_win is None or not self._preview_win.winfo_exists():
-            self._preview_win = tk.Toplevel(self.root)
-            self._preview_win.title("Contour Preview (live)")
-            self._preview_label = tk.Label(self._preview_win)
-            self._preview_label.pack()
-        self._render_preview_in_window()
-
-    def _render_preview_in_window(self):
-        if self.cropped_image is None:
-            return
-        if self._preview_win is None or not self._preview_win.winfo_exists():
-            return
-
-        h, w = self.cropped_image.shape
-        s = self.scale.get()
-        bpad = 10
-        cw = int(w * s) + bpad * 2
-        ch = int(h * s) + bpad * 2
-        canvas = np.ones((ch, cw, 3), dtype=np.uint8) * 255
-
-        for contour in self.contours:
-            pts = (contour * s).astype(np.int32) + bpad
-            for i in range(len(pts) - 1):
-                p1 = tuple(np.clip(pts[i], 0, [cw - 1, ch - 1]))
-                p2 = tuple(np.clip(pts[i + 1], 0, [cw - 1, ch - 1]))
-                cv2.line(canvas, p1, p2, (0, 0, 0), 1)
-
-        cv2.rectangle(canvas, (bpad, bpad), (bpad + int(w * s), bpad + int(h * s)), (200, 200, 200), 1)
-
-        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb)
-        max_w, max_h = 1000, 700
-        iw, ih = pil_img.size
-        if iw > max_w or ih > max_h:
-            ratio = min(max_w / iw, max_h / ih)
-            pil_img = pil_img.resize((int(iw * ratio), int(ih * ratio)), Image.LANCZOS)
-
-        tk_img = ImageTk.PhotoImage(pil_img)
-        self._preview_label.config(image=tk_img)
-        self._preview_label.image = tk_img
+        if self.preview is None or not self.preview.is_open():
+            self.preview = PreviewWindow(self.root)
+        self.preview.render(self.contours, self.scale.get(), self.cropped_image.shape[:2])
 
     # ── Drawing ──
 
