@@ -5,9 +5,8 @@ image. It uses fast, jitter-free X11 `ctypes` calls for mouse control, making
 it suitable for driving drawing applications that accept synthetic pointer
 input.
 
-> **Status:** early prototype. The entire implementation currently lives in a
-> single script (`line_tracer.py`). A more robust project structure will be
-> introduced in future iterations.
+> **Status:** early prototype. Source lives in `main.py` with supporting
+> modules under `ui/`, `detection/`, and `drawing/`.
 
 ## Features
 
@@ -27,7 +26,7 @@ input.
   ```
 - Python packages:
   ```bash
-  pip install opencv-python numpy Pillow
+  pip install -r requirements.txt
   ```
 
 ## Usage
@@ -36,7 +35,7 @@ Because the script warps the pointer and synthesizes mouse button events, it
 typically needs to run with elevated permissions:
 
 ```bash
-sudo python3 line_tracer.py
+sudo python3 main.py
 ```
 
 1. Load an image via the GUI.

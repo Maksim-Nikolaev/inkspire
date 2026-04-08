@@ -3,7 +3,7 @@
 import cv2
 import numpy as np
 
-from detection import detect_edges
+from detection.modes import detect_edges
 
 __all__ = ["extract_contours", "skeletonize"]
 

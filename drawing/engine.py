@@ -2,7 +2,7 @@
 
 import time
 import numpy as np
-from mouse_x11 import mouse_move, mouse_down, mouse_up, get_mouse_pos, is_escape_pressed
+from drawing.mouse_x11 import mouse_move, mouse_down, mouse_up, get_mouse_pos, is_escape_pressed
 
 __all__ = ["DrawEngine"]
 

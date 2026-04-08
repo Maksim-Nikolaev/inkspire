@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Line Tracer – traces line art by moving the mouse along extracted contours.
+Inkspire – traces line art by moving the mouse along extracted contours.
 Uses ctypes X11 calls for fast, jitter-free mouse control.
 
 Supports: B/W line art, colored images, halftones via multiple detection modes.
 
-Usage: sudo python3 line_tracer.py
+Usage: sudo python3 main.py
 
 Requires: opencv-python, numpy, Pillow
 Install:  sudo pip install opencv-python numpy Pillow --break-system-packages
@@ -20,22 +20,22 @@ from PIL import Image, ImageTk
 import threading
 import time
 import sys
-from detection import detect_art_bounds, detect_edges
-from crop_dialog import CropDialog
-from contours import extract_contours, skeletonize
-from suggest import compute_suggested
-from drawing import DrawEngine
-from widgets import LinkedSliderEntry
-from preview import PreviewWindow
+from detection.modes import detect_art_bounds, detect_edges
+from detection.contours import extract_contours, skeletonize
+from detection.suggest import compute_suggested
+from drawing.engine import DrawEngine
+from ui.crop_dialog import CropDialog
+from ui.widgets import LinkedSliderEntry
+from ui.preview import PreviewWindow
 
 MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
 
 # ── Main GUI ──
 
-class LineTracer:
+class Inkspire:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Line Tracer")
+        self.root.title("Inkspire")
         self.root.resizable(False, False)
 
         self.image_path = None
@@ -404,4 +404,4 @@ class LineTracer:
 
 
 if __name__ == "__main__":
-    LineTracer()
+    Inkspire()
