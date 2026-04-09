@@ -501,14 +501,14 @@ class Inkspire:
         key_row.pack(fill="x", **pad)
 
         ttk.Label(key_row, text="Start / Pause:").pack(side="left", **pad)
-        self._lbl_start_key = ttk.Label(key_row, text=cfg.get("start_key", "F5"),
+        self._lbl_start_key = ttk.Label(key_row, text=self.config.get("start_key", "F5"),
                                          width=10, relief="sunken", anchor="center")
         self._lbl_start_key.pack(side="left", **pad)
         ttk.Button(key_row, text="Set", width=4,
                    command=lambda: self._capture_key("start_key", self._lbl_start_key)).pack(side="left", **pad)
 
         ttk.Label(key_row, text="Cancel:").pack(side="left", padx=(12, 6), pady=3)
-        self._lbl_stop_key = ttk.Label(key_row, text=cfg.get("stop_key", "Escape"),
+        self._lbl_stop_key = ttk.Label(key_row, text=self.config.get("stop_key", "Escape"),
                                         width=10, relief="sunken", anchor="center")
         self._lbl_stop_key.pack(side="left", **pad)
         ttk.Button(key_row, text="Set", width=4,
