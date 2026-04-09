@@ -8,14 +8,15 @@ __all__ = ["DrawEngine"]
 
 
 class DrawEngine:
-    def __init__(self, on_status):
+    def __init__(self, on_status, cancel_check=None):
         self.on_status = on_status
         self.cancel_flag = False
-        self._escape_was_pressed = False
+        self._cancel_check = cancel_check or is_escape_pressed
+        self._was_pressed = False
 
     def run(self, contours, params):
         self.cancel_flag = False
-        self._escape_was_pressed = False
+        self._was_pressed = False
 
         delay = params["delay_before_start"]
         for i in range(delay, 0, -1):
@@ -78,10 +79,10 @@ class DrawEngine:
     def _should_cancel(self):
         if self.cancel_flag:
             return True
-        esc_pressed = is_escape_pressed()
-        if esc_pressed and not self._escape_was_pressed:
+        pressed = self._cancel_check()
+        if pressed and not self._was_pressed:
             self.cancel_flag = True
-        self._escape_was_pressed = esc_pressed
+        self._was_pressed = pressed
         return self.cancel_flag
 
     def _sleep_with_cancel(self, duration, interval=0.02):

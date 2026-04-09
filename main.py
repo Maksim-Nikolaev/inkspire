@@ -5,7 +5,7 @@ Uses ctypes X11 calls for fast, jitter-free mouse control.
 
 Supports: B/W line art, colored images, halftones via multiple detection modes.
 
-Usage: sudo python3 main.py
+Usage: python3 main.py
 
 Requires: opencv-python, numpy, Pillow
 Install:  sudo pip install opencv-python numpy Pillow --break-system-packages
@@ -29,6 +29,9 @@ from ui.crop_dialog import CropDialog
 from ui.tooltip import Tooltip
 from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
+from core.config import load_config
+from core.keybinds import resolve_keycode
+from drawing.mouse_x11 import is_key_pressed
 
 MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
 
@@ -45,7 +48,10 @@ class Inkspire:
         self.cropped_image = None
         self.contours = []
         self._preview_timer = None
-        self.draw_engine = DrawEngine(on_status=self._update_status)
+        self.config = load_config()
+        stop_keycode = resolve_keycode(self.config.get("stop_key", "Escape"))
+        cancel_check = (lambda: is_key_pressed(stop_keycode)) if stop_keycode else None
+        self.draw_engine = DrawEngine(on_status=self._update_status, cancel_check=cancel_check)
 
         self._widgets: dict[str, LinkedSliderEntry] = {}
 
@@ -75,6 +81,8 @@ class Inkspire:
         self.preview = None
 
         self._build_gui()
+        self.root.bind_all("<F5>", lambda e: self._start_drawing())
+        self.root.bind_all("<Escape>", lambda e: self._cancel())
         self._setup_traces()
         self._update_mode_visibility()
         self.root.mainloop()
