@@ -13,7 +13,7 @@ fi
 source "$VENV/bin/activate"
 
 # Install deps
-pip install --quiet opencv-python numpy Pillow fonttools pyinstaller
+pip install --quiet "opencv-python" "numpy" "Pillow" "fonttools" "pyinstaller"
 
 # Clean previous build
 rm -rf build/ dist/
