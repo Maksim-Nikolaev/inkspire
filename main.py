@@ -42,6 +42,7 @@ from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
 from ui.canvas_picker import CanvasPicker
 from core.config import load_config, save_config
+from core.optimize import optimize_path
 from core.keybinds import resolve_keycode, is_key_pressed
 from core.clipboard import get_clipboard_image
 
@@ -93,6 +94,7 @@ class Inkspire:
         self.use_skeleton = tk.BooleanVar(value=False)
         self.relative_offset = tk.BooleanVar(value=cfg.get("relative_offset", True))
         self.auto_preview = tk.BooleanVar(value=cfg.get("auto_preview", True))
+        self.optimize_path = tk.BooleanVar(value=cfg.get("optimize_path", False))
 
         self.text_input = tk.StringVar(value="")
         self.font_size = tk.IntVar(value=48)
@@ -310,6 +312,11 @@ class Inkspire:
                                   variable=self.use_skeleton)
         skel_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
         Tooltip(skel_cb, "Thin all detected regions to 1px centerlines. Useful when source has thick brush strokes. Off by default.")
+        row += 1
+        opt_cb = ttk.Checkbutton(self._frame_cont, text="Optimize path order",
+                                 variable=self.optimize_path)
+        opt_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+        Tooltip(opt_cb, "Reorder contours to minimize pen-up travel distance using nearest-neighbor. May improve drawing speed for scattered contours.")
         row += 1
         self.btn_suggested = ttk.Button(self._frame_cont, text="Reset to Suggested",
                                         command=self._apply_suggested, state="disabled")
@@ -608,6 +615,10 @@ class Inkspire:
         if not self.contours:
             self.lbl_status.config(text="No contours to draw.")
             return
+        draw_contours = list(self.contours)
+        if self.optimize_path.get() and len(draw_contours) > 1:
+            draw_contours, reduction = optimize_path(draw_contours)
+            self._update_status(f"Optimized: travel reduced by {reduction:.0%}")
         params = {
             "mouse_button": self.mouse_button.get(),
             "speed": self.speed.get(),
@@ -617,7 +628,7 @@ class Inkspire:
             "relative_to_mouse": self.relative_offset.get(),
             "delay_before_start": self.delay_before.get(),
         }
-        threading.Thread(target=self.draw_engine.run, args=(self.contours, params), daemon=True).start()
+        threading.Thread(target=self.draw_engine.run, args=(draw_contours, params), daemon=True).start()
 
     def _on_ctrl_v(self, event):
         if isinstance(event.widget, tk.Text):
@@ -739,6 +750,7 @@ class Inkspire:
             "delay_before": self.delay_before.get(),
             "relative_offset": self.relative_offset.get(),
             "auto_preview": self.auto_preview.get(),
+            "optimize_path": self.optimize_path.get(),
         })
         save_config(self.config)
         self.root.destroy()
