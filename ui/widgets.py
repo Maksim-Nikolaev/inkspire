@@ -7,7 +7,7 @@ __all__ = ["LinkedSliderEntry"]
 
 
 class LinkedSliderEntry:
-    def __init__(self, parent, row, label, var, var_name, is_int, from_, to, step, pad=None):
+    def __init__(self, parent, row, label, var, var_name, is_int, from_, to, step, pad=None, tooltip=None):
         if pad is None:
             pad = {"padx": 6, "pady": 3}
 
@@ -47,6 +47,10 @@ class LinkedSliderEntry:
 
         self.entry.bind("<Return>", lambda ev: self._entry_commit())
         self.entry.bind("<FocusOut>", lambda ev: self._entry_commit())
+
+        if tooltip:
+            from ui.tooltip import Tooltip
+            Tooltip(self.label, tooltip)
 
     def set_visible(self, visible: bool):
         if visible:
