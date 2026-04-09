@@ -8,6 +8,7 @@ __all__ = ["AboutDialog"]
 VERSION = "0.1.0"
 AUTHOR = "Maksim Nikolaev"
 REPO_URL = "https://github.com/Maksim-Nikolaev/inkspire"
+LINKEDIN_URL = "https://www.linkedin.com/in/maksim-nikolaev-dev/"
 
 
 class AboutDialog:
@@ -30,6 +31,7 @@ class AboutDialog:
         ttk.Label(self.win, text=f"Author: {AUTHOR}").pack(**pad)
         ttk.Label(self.win, text="License: MIT").pack(**pad)
         ttk.Label(self.win, text=REPO_URL, foreground="blue", cursor="hand2").pack(**pad)
+        ttk.Label(self.win, text=LINKEDIN_URL, foreground="blue", cursor="hand2").pack(**pad)
 
         ttk.Button(self.win, text="Close", command=self.win.destroy).pack(pady=12)
 
