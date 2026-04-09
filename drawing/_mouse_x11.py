@@ -3,27 +3,19 @@
 import ctypes
 import sys
 
-__all__ = ["mouse_move", "mouse_down", "mouse_up", "get_mouse_pos", "is_key_pressed", "is_escape_pressed"]
+__all__ = ["mouse_move", "mouse_down", "mouse_up", "get_mouse_pos"]
 
 _xlib = ctypes.cdll.LoadLibrary("libX11.so.6")
 _xtst = ctypes.cdll.LoadLibrary("libXtst.so.6")
 
 _xlib.XOpenDisplay.restype = ctypes.c_void_p
 _xlib.XDefaultRootWindow.restype = ctypes.c_ulong
-_xlib.XStringToKeysym.argtypes = [ctypes.c_char_p]
-_xlib.XStringToKeysym.restype = ctypes.c_ulong
-_xlib.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-_xlib.XKeysymToKeycode.restype = ctypes.c_uint
-_xlib.XQueryKeymap.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-_xlib.XQueryKeymap.restype = ctypes.c_int
 
 _display = _xlib.XOpenDisplay(None)
 if not _display:
     print("Error: cannot open X display. Are you running under X11?")
     sys.exit(1)
 _root = _xlib.XDefaultRootWindow(_display)
-_escape_keysym = _xlib.XStringToKeysym(b"Escape")
-_escape_keycode = _xlib.XKeysymToKeycode(_display, _escape_keysym)
 
 
 def mouse_move(x, y):
@@ -59,15 +51,3 @@ def get_mouse_pos():
     return root_x.value, root_y.value
 
 
-def is_key_pressed(keycode):
-    if not keycode:
-        return False
-    keymap = ctypes.create_string_buffer(32)
-    _xlib.XQueryKeymap(_display, keymap)
-    byte_index = keycode // 8
-    bit_mask = 1 << (keycode % 8)
-    return bool(keymap.raw[byte_index] & bit_mask)
-
-
-def is_escape_pressed():
-    return is_key_pressed(_escape_keycode)
