@@ -2,6 +2,7 @@
 set -euo pipefail
 
 VENV=".venv-build"
+OUT="builds"
 
 echo "=== Inkspire build ==="
 
@@ -21,7 +22,12 @@ rm -rf build/ dist/
 # Build single-file executable
 pyinstaller inkspire.spec
 
-SIZE=$(du -h dist/inkspire* | head -1 | cut -f1)
+# Package
+mkdir -p "$OUT"
+chmod +x dist/inkspire
+tar -czf "$OUT/inkspire-linux.tar.gz" -C dist inkspire
+
+SIZE=$(du -h "$OUT/inkspire-linux.tar.gz" | cut -f1)
 echo ""
-echo "=== Done: dist/inkspire ($SIZE) ==="
-echo "Run: ./dist/inkspire"
+echo "=== Done: $OUT/inkspire-linux.tar.gz ($SIZE) ==="
+echo "Extract and run: tar xzf inkspire-linux.tar.gz && ./inkspire"
