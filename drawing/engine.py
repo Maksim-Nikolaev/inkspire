@@ -45,10 +45,21 @@ class DrawEngine:
             ox, oy = params["offset_x"], params["offset_y"]
 
         total = len(contours)
+        total_pts = sum(len(c) for c in contours)
         for idx, contour in enumerate(contours):
             if self._should_cancel():
                 break
-            self.on_status(f"Drawing contour {idx + 1}/{total}...")
+            drawn_pts = sum(len(contours[i]) for i in range(idx))
+            remaining_pts = total_pts - drawn_pts
+            if pts_per_sec > 0:
+                eta_sec = remaining_pts / pts_per_sec
+                if eta_sec >= 60:
+                    eta_str = f"~{int(eta_sec // 60)}m {int(eta_sec % 60)}s remaining"
+                else:
+                    eta_str = f"~{int(eta_sec)}s remaining"
+                self.on_status(f"Drawing contour {idx + 1}/{total} — {eta_str}")
+            else:
+                self.on_status(f"Drawing contour {idx + 1}/{total}")
 
             pts = contour.astype(np.float64) * s
             pts[:, 0] += ox
