@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inkspire"
-version = "0.4.0"
+version = "0.5.0"
 description = "Trace line art by moving the mouse along extracted contours"
 requires-python = ">=3.10"
 license = {text = "MIT"}

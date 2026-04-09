@@ -41,7 +41,7 @@ from ui.tooltip import Tooltip
 from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
 from ui.canvas_picker import CanvasPicker
-from core.config import load_config, save_config
+from core.config import load_config, save_config, load_session, save_session
 from core.optimize import optimize_path
 from core.keybinds import resolve_keycode, is_key_pressed
 from core.clipboard import get_clipboard_image
@@ -108,6 +108,7 @@ class Inkspire:
         self.root.bind_all("<Control-v>", self._on_ctrl_v)
         self._setup_traces()
         self._update_mode_visibility()
+        self._restore_session()
 
         # Global hotkey polling (works even when another app has focus)
         start_keycode = resolve_keycode(self.config.get("start_key", "F5"))
@@ -172,6 +173,76 @@ class Inkspire:
             self.root.after(50, self._populate_fonts)
         if self.preview and self.preview.is_open():
             self._update_live_preview()
+
+    def _restore_session(self):
+        session = load_session()
+        if session is None:
+            return
+
+        det = session.get("detection_settings", {})
+        if "mode" in det:
+            self.detect_mode.set(det["mode"])
+        for key, var in [
+            ("threshold", self.threshold), ("canny_lo", self.canny_lo),
+            ("canny_hi", self.canny_hi), ("adaptive_block", self.adaptive_block),
+            ("adaptive_c", self.adaptive_c), ("blur_radius", self.blur_radius),
+            ("morph_iter", self.morph_iter), ("min_contour_len", self.min_contour_len),
+            ("simplify", self.simplify),
+        ]:
+            if key in det:
+                var.set(det[key])
+        if "skeleton" in det:
+            self.use_skeleton.set(det["skeleton"])
+
+        drw = session.get("drawing_settings", {})
+        for key, var in [
+            ("scale", self.scale), ("offset_x", self.offset_x),
+            ("offset_y", self.offset_y), ("speed", self.speed),
+            ("delay_before", self.delay_before),
+        ]:
+            if key in drw:
+                var.set(drw[key])
+        if "mouse_button" in drw:
+            self.mouse_button.set(drw["mouse_button"])
+        if "relative_offset" in drw:
+            self.relative_offset.set(drw["relative_offset"])
+        if "auto_preview" in drw:
+            self.auto_preview.set(drw["auto_preview"])
+        if "optimize_path" in drw:
+            self.optimize_path.set(drw["optimize_path"])
+
+        self.root.after(10, self._sync_all_widgets)
+        self.root.after(10, self._update_mode_visibility)
+
+        tab = session.get("input_tab", 0)
+        if tab == 1:
+            self._notebook.select(1)
+
+        text = session.get("text_content", "")
+        if text:
+            self._text_box.delete("1.0", "end")
+            self._text_box.insert("1.0", text)
+
+        font_path = session.get("font_path")
+        if font_path:
+            self.font_path = font_path
+            name = font_path.split("/")[-1].split("\\")[-1]
+            self._font_combo.set(name)
+
+        font_size = session.get("font_size")
+        if font_size:
+            self.font_size.set(font_size)
+
+        source = session.get("source_path")
+        if source and source != "(clipboard)":
+            import os
+            if os.path.exists(source):
+                if source.lower().endswith(".svg"):
+                    self.root.after(100, lambda: self._load_svg(source))
+                else:
+                    self.root.after(100, lambda: self._load_image(source))
+            else:
+                self._update_status(f"Session file not found: {source}")
 
     # ── Traces for live preview ──
 
@@ -753,6 +824,37 @@ class Inkspire:
             "optimize_path": self.optimize_path.get(),
         })
         save_config(self.config)
+        save_session({
+            "source_path": self.image_path,
+            "input_tab": self._notebook.index("current"),
+            "detection_settings": {
+                "mode": self.detect_mode.get(),
+                "threshold": self.threshold.get(),
+                "canny_lo": self.canny_lo.get(),
+                "canny_hi": self.canny_hi.get(),
+                "adaptive_block": self.adaptive_block.get(),
+                "adaptive_c": self.adaptive_c.get(),
+                "blur_radius": self.blur_radius.get(),
+                "morph_iter": self.morph_iter.get(),
+                "min_contour_len": self.min_contour_len.get(),
+                "simplify": self.simplify.get(),
+                "skeleton": self.use_skeleton.get(),
+            },
+            "drawing_settings": {
+                "scale": self.scale.get(),
+                "offset_x": self.offset_x.get(),
+                "offset_y": self.offset_y.get(),
+                "speed": self.speed.get(),
+                "mouse_button": self.mouse_button.get(),
+                "delay_before": self.delay_before.get(),
+                "relative_offset": self.relative_offset.get(),
+                "auto_preview": self.auto_preview.get(),
+                "optimize_path": self.optimize_path.get(),
+            },
+            "text_content": self._text_box.get("1.0", "end-1c"),
+            "font_path": self.font_path,
+            "font_size": self.font_size.get(),
+        })
         self.root.destroy()
         sys.exit(0)
 

@@ -3,10 +3,11 @@
 import json
 from pathlib import Path
 
-__all__ = ["load_config", "save_config", "CONFIG_DIR"]
+__all__ = ["load_config", "save_config", "load_session", "save_session", "CONFIG_DIR"]
 
 CONFIG_DIR = Path.home() / ".config" / "inkspire"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+SESSION_FILE = CONFIG_DIR / "session.json"
 
 DEFAULTS = {
     "stop_key": "Escape",
@@ -41,3 +42,19 @@ def save_config(config: dict):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
+
+
+def load_session() -> dict | None:
+    if not SESSION_FILE.exists():
+        return None
+    try:
+        with open(SESSION_FILE) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_session(session: dict):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(SESSION_FILE, "w") as f:
+        json.dump(session, f, indent=2)
