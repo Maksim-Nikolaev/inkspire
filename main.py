@@ -29,6 +29,7 @@ from ui.crop_dialog import CropDialog
 from ui.tooltip import Tooltip
 from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
+from ui.canvas_picker import CanvasPicker
 from core.config import load_config
 from core.keybinds import resolve_keycode
 from drawing.mouse_x11 import is_key_pressed
@@ -282,6 +283,10 @@ class Inkspire:
         delay_entry.grid(row=row, column=1, sticky="w", **pad)
         Tooltip(delay_entry, "Seconds of countdown before drawing begins. Use this time to switch to your target application and position your mouse.")
 
+        row += 1
+        ttk.Button(frame_draw, text="Set Canvas", command=self._pick_canvas).grid(
+            row=row, column=0, columnspan=3, sticky="w", **pad)
+
         frame_draw.columnconfigure(1, weight=1)
 
         # ── Status ──
@@ -433,6 +438,22 @@ class Inkspire:
 
     def _show_about(self):
         AboutDialog(self.root)
+
+    def _pick_canvas(self):
+        if self.cropped_image is None:
+            self._update_status("Load an image first.")
+            return
+        CanvasPicker(self.root, self._apply_canvas_target)
+
+    def _apply_canvas_target(self, x, y, width, height):
+        self.offset_x.set(x)
+        self.offset_y.set(y)
+        self.relative_offset.set(False)
+        img_h, img_w = self.cropped_image.shape[:2]
+        scale_x = width / img_w
+        scale_y = height / img_h
+        self.scale.set(round(min(scale_x, scale_y), 3))
+        self._update_status(f"Canvas set: {width}x{height} at ({x},{y}), scale={self.scale.get():.3f}")
 
     def _quit(self):
         self.root.destroy()
