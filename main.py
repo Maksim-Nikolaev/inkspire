@@ -41,7 +41,9 @@ from ui.tooltip import Tooltip
 from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
 from ui.canvas_picker import CanvasPicker
-from core.config import load_config, save_config
+from ui.keybinds_dialog import KeybindsDialog
+from core.config import load_config, save_config, load_session, save_session
+from core.optimize import optimize_path
 from core.keybinds import resolve_keycode, is_key_pressed
 from core.clipboard import get_clipboard_image
 
@@ -78,7 +80,7 @@ class Inkspire:
         self.scale = tk.DoubleVar(value=cfg.get("scale", 1.0))
         self.offset_x = tk.IntVar(value=cfg.get("offset_x", 200))
         self.offset_y = tk.IntVar(value=cfg.get("offset_y", 200))
-        self.speed = tk.DoubleVar(value=cfg.get("speed", 0.02))
+        self.speed = tk.IntVar(value=cfg.get("speed", 50))
         self.threshold = tk.IntVar(value=128)
         self.canny_lo = tk.IntVar(value=50)
         self.canny_hi = tk.IntVar(value=150)
@@ -93,6 +95,7 @@ class Inkspire:
         self.use_skeleton = tk.BooleanVar(value=False)
         self.relative_offset = tk.BooleanVar(value=cfg.get("relative_offset", True))
         self.auto_preview = tk.BooleanVar(value=cfg.get("auto_preview", True))
+        self.optimize_path = tk.BooleanVar(value=cfg.get("optimize_path", False))
 
         self.text_input = tk.StringVar(value="")
         self.font_size = tk.IntVar(value=48)
@@ -100,12 +103,14 @@ class Inkspire:
         self._font_list = []
 
         self.preview = None
+        self._restoring_session = False
 
         self._build_gui()
         self.root.bind_all("<Escape>", lambda e: self._cancel())
         self.root.bind_all("<Control-v>", self._on_ctrl_v)
         self._setup_traces()
         self._update_mode_visibility()
+        self._restore_session()
 
         # Global hotkey polling (works even when another app has focus)
         start_keycode = resolve_keycode(self.config.get("start_key", "F5"))
@@ -170,6 +175,82 @@ class Inkspire:
             self.root.after(50, self._populate_fonts)
         if self.preview and self.preview.is_open():
             self._update_live_preview()
+
+    def _restore_session(self):
+        session = load_session()
+        if session is None:
+            return
+
+        det = session.get("detection_settings", {})
+        if "mode" in det:
+            self.detect_mode.set(det["mode"])
+        for key, var in [
+            ("threshold", self.threshold), ("canny_lo", self.canny_lo),
+            ("canny_hi", self.canny_hi), ("adaptive_block", self.adaptive_block),
+            ("adaptive_c", self.adaptive_c), ("blur_radius", self.blur_radius),
+            ("morph_iter", self.morph_iter), ("min_contour_len", self.min_contour_len),
+            ("simplify", self.simplify),
+        ]:
+            if key in det:
+                var.set(det[key])
+        if "skeleton" in det:
+            self.use_skeleton.set(det["skeleton"])
+
+        drw = session.get("drawing_settings", {})
+        for key, var in [
+            ("scale", self.scale), ("offset_x", self.offset_x),
+            ("offset_y", self.offset_y), ("speed", self.speed),
+            ("delay_before", self.delay_before),
+        ]:
+            if key in drw:
+                var.set(drw[key])
+        if "mouse_button" in drw:
+            self.mouse_button.set(drw["mouse_button"])
+        if "relative_offset" in drw:
+            self.relative_offset.set(drw["relative_offset"])
+        if "auto_preview" in drw:
+            self.auto_preview.set(drw["auto_preview"])
+        if "optimize_path" in drw:
+            self.optimize_path.set(drw["optimize_path"])
+
+        self.root.after(10, self._sync_all_widgets)
+        self.root.after(10, self._update_mode_visibility)
+
+        tab = session.get("input_tab", 0)
+        if tab == 1:
+            self._notebook.select(1)
+
+        text = session.get("text_content", "")
+        if text:
+            self._text_box.delete("1.0", "end")
+            self._text_box.insert("1.0", text)
+
+        font_path = session.get("font_path")
+        if font_path:
+            self.font_path = font_path
+            name = font_path.split("/")[-1].split("\\")[-1]
+            self._font_combo.set(name)
+
+        font_size = session.get("font_size")
+        if font_size:
+            self.font_size.set(font_size)
+
+        source = session.get("source_path")
+        if source and source != "(clipboard)":
+            import os
+            if os.path.exists(source):
+                self._restoring_session = True
+                def _restore_source():
+                    try:
+                        if source.lower().endswith(".svg"):
+                            self._load_svg(source)
+                        else:
+                            self._load_image(source)
+                    finally:
+                        self._restoring_session = False
+                self.root.after(100, _restore_source)
+            else:
+                self.image_path = None
 
     # ── Traces for live preview ──
 
@@ -311,6 +392,11 @@ class Inkspire:
         skel_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
         Tooltip(skel_cb, "Thin all detected regions to 1px centerlines. Useful when source has thick brush strokes. Off by default.")
         row += 1
+        opt_cb = ttk.Checkbutton(self._frame_cont, text="Optimize path order",
+                                 variable=self.optimize_path)
+        opt_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+        Tooltip(opt_cb, "Reorder contours to minimize pen-up travel distance using nearest-neighbor. May improve drawing speed for scattered contours.")
+        row += 1
         self.btn_suggested = ttk.Button(self._frame_cont, text="Reset to Suggested",
                                         command=self._apply_suggested, state="disabled")
         self.btn_suggested.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
@@ -384,9 +470,9 @@ class Inkspire:
 
         row += 1
         self._widgets["speed"] = LinkedSliderEntry(
-            self._frame_draw, row, "Speed (s/point):", self.speed, "speed",
-            is_int=False, from_=0.0, to=0.1, step=0.001, pad=pad,
-            tooltip="Delay in seconds between each point movement. Lower = faster. 0 = maximum speed. If the target app drops strokes, increase this.")
+            self._frame_draw, row, "Speed (pts/s):", self.speed, "speed",
+            is_int=True, from_=0, to=200, step=1, pad=pad,
+            tooltip="Drawing speed in points per second. Higher = faster. 0 = maximum speed (no delay). Default: 50.")
 
         row += 1
         ttk.Label(self._frame_draw, text="Mouse button:").grid(row=row, column=0, sticky="w", **pad)
@@ -422,6 +508,7 @@ class Inkspire:
         ttk.Button(self._frame_btn, text="Preview", command=self._open_preview).pack(side="left", **pad)
         ttk.Checkbutton(self._frame_btn, text="Live", variable=self.auto_preview).pack(side="left", **pad)
         ttk.Button(self._frame_btn, text="Start Drawing", command=self._start_drawing).pack(side="left", **pad)
+        ttk.Button(self._frame_btn, text="Keybinds", command=self._show_keybinds).pack(side="left", **pad)
         ttk.Button(self._frame_btn, text="About", command=self._show_about).pack(side="left", **pad)
         ttk.Button(self._frame_btn, text="Quit", command=self._quit).pack(side="right", **pad)
 
@@ -497,7 +584,8 @@ class Inkspire:
             self.cropped_image = self.gray_image[y:y + ch, x:x + cw].copy()
             self.lbl_crop.config(text=f"Crop: ({x},{y}) {cw}x{ch}px from {w}x{h}px original")
 
-        self._apply_suggested()
+        if not self._restoring_session:
+            self._apply_suggested()
         self._extract_contours()
         if self.auto_preview.get():
             self._open_preview()
@@ -587,14 +675,42 @@ class Inkspire:
         if path:
             self._load_svg(path)
 
+    # ── Keybinds ──
+
+    def _show_keybinds(self):
+        self._polling_paused = True
+        dlg = KeybindsDialog(self.root, self.config, self._on_keybind_update)
+        dlg.win.bind("<Destroy>", lambda e: setattr(self, "_polling_paused", False))
+
+    def _on_keybind_update(self, config_key, key_name):
+        keycode = resolve_keycode(key_name)
+        if not keycode:
+            self._update_status(f"Key '{key_name}' not supported.")
+            return
+        if config_key == "start_key":
+            self._start_keycode = keycode
+        elif config_key == "stop_key":
+            stop_check = (lambda: is_key_pressed(keycode))
+            self.draw_engine._cancel_check = stop_check
+        self._update_status(f"Keybind set: {config_key} = {key_name}")
+
     # ── Drawing ──
 
     def _poll_start_key(self):
+        if getattr(self, "_polling_paused", False):
+            self.root.after(30, self._poll_start_key)
+            return
         pressed = is_key_pressed(self._start_keycode)
         if pressed and not self._start_key_was_pressed:
-            self._start_drawing()
+            state = self.draw_engine.state
+            if state == "idle":
+                self._start_drawing()
+            elif state == "drawing":
+                self.draw_engine.pause()
+            elif state == "paused":
+                self.draw_engine.resume()
         self._start_key_was_pressed = pressed
-        self.root.after(100, self._poll_start_key)
+        self.root.after(30, self._poll_start_key)
 
     def _start_drawing(self):
         if not self.contours and self.input_mode == "image":
@@ -602,6 +718,10 @@ class Inkspire:
         if not self.contours:
             self.lbl_status.config(text="No contours to draw.")
             return
+        draw_contours = list(self.contours)
+        if self.optimize_path.get() and len(draw_contours) > 1:
+            draw_contours, reduction = optimize_path(draw_contours)
+            self._update_status(f"Optimized: travel reduced by {reduction:.0%}")
         params = {
             "mouse_button": self.mouse_button.get(),
             "speed": self.speed.get(),
@@ -611,7 +731,7 @@ class Inkspire:
             "relative_to_mouse": self.relative_offset.get(),
             "delay_before_start": self.delay_before.get(),
         }
-        threading.Thread(target=self.draw_engine.run, args=(self.contours, params), daemon=True).start()
+        threading.Thread(target=self.draw_engine.run, args=(draw_contours, params), daemon=True).start()
 
     def _on_ctrl_v(self, event):
         if isinstance(event.widget, tk.Text):
@@ -733,8 +853,40 @@ class Inkspire:
             "delay_before": self.delay_before.get(),
             "relative_offset": self.relative_offset.get(),
             "auto_preview": self.auto_preview.get(),
+            "optimize_path": self.optimize_path.get(),
         })
         save_config(self.config)
+        save_session({
+            "source_path": self.image_path,
+            "input_tab": self._notebook.index("current"),
+            "detection_settings": {
+                "mode": self.detect_mode.get(),
+                "threshold": self.threshold.get(),
+                "canny_lo": self.canny_lo.get(),
+                "canny_hi": self.canny_hi.get(),
+                "adaptive_block": self.adaptive_block.get(),
+                "adaptive_c": self.adaptive_c.get(),
+                "blur_radius": self.blur_radius.get(),
+                "morph_iter": self.morph_iter.get(),
+                "min_contour_len": self.min_contour_len.get(),
+                "simplify": self.simplify.get(),
+                "skeleton": self.use_skeleton.get(),
+            },
+            "drawing_settings": {
+                "scale": self.scale.get(),
+                "offset_x": self.offset_x.get(),
+                "offset_y": self.offset_y.get(),
+                "speed": self.speed.get(),
+                "mouse_button": self.mouse_button.get(),
+                "delay_before": self.delay_before.get(),
+                "relative_offset": self.relative_offset.get(),
+                "auto_preview": self.auto_preview.get(),
+                "optimize_path": self.optimize_path.get(),
+            },
+            "text_content": self._text_box.get("1.0", "end-1c"),
+            "font_path": self.font_path,
+            "font_size": self.font_size.get(),
+        })
         self.root.destroy()
         sys.exit(0)
 
