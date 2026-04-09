@@ -25,6 +25,7 @@ from detection.contours import extract_contours, skeletonize
 from detection.suggest import compute_suggested
 from drawing.engine import DrawEngine
 from ui.crop_dialog import CropDialog
+from ui.tooltip import Tooltip
 from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
 
@@ -157,23 +158,28 @@ class Inkspire:
         row = 0
         self._widgets["threshold"] = LinkedSliderEntry(
             frame_det, row, "Threshold (1-254):", self.threshold, "threshold",
-            is_int=True, from_=1, to=254, step=1, pad=pad)
+            is_int=True, from_=1, to=254, step=1, pad=pad,
+            tooltip="Brightness cutoff (0=black, 255=white). Pixels darker than this become edges. Lower = more detected. Otsu auto-picks the optimal split.")
         row += 1
         self._widgets["canny_lo"] = LinkedSliderEntry(
             frame_det, row, "Canny low:", self.canny_lo, "canny_lo",
-            is_int=True, from_=1, to=300, step=1, pad=pad)
+            is_int=True, from_=1, to=300, step=1, pad=pad,
+            tooltip="Minimum gradient strength to start an edge. Lower = more edges, more noise. Typical: 30-100.")
         row += 1
         self._widgets["canny_hi"] = LinkedSliderEntry(
             frame_det, row, "Canny high:", self.canny_hi, "canny_hi",
-            is_int=True, from_=1, to=500, step=1, pad=pad)
+            is_int=True, from_=1, to=500, step=1, pad=pad,
+            tooltip="Minimum gradient strength to confirm an edge. Lower = more connected edges. Typical: 100-250. Keep > Canny low.")
         row += 1
         self._widgets["adaptive_block"] = LinkedSliderEntry(
             frame_det, row, "Adaptive block size:", self.adaptive_block, "adaptive_block",
-            is_int=True, from_=3, to=99, step=2, pad=pad)
+            is_int=True, from_=3, to=99, step=2, pad=pad,
+            tooltip="Size of the local neighborhood for threshold calculation. Must be odd. Larger = smoother, less sensitive to small features. Typical: 7-21.")
         row += 1
         self._widgets["adaptive_c"] = LinkedSliderEntry(
             frame_det, row, "Adaptive C:", self.adaptive_c, "adaptive_c",
-            is_int=True, from_=-20, to=20, step=1, pad=pad)
+            is_int=True, from_=-20, to=20, step=1, pad=pad,
+            tooltip="Constant subtracted from the local mean. Higher = fewer edges detected. Typical: 0-10.")
 
         frame_det.columnconfigure(1, weight=1)
 
@@ -184,11 +190,13 @@ class Inkspire:
         row = 0
         self._widgets["blur_radius"] = LinkedSliderEntry(
             frame_proc, row, "Blur radius (halftone):", self.blur_radius, "blur_radius",
-            is_int=True, from_=0, to=20, step=1, pad=pad)
+            is_int=True, from_=0, to=20, step=1, pad=pad,
+            tooltip="Gaussian blur kernel radius applied before detection. Removes halftone dots and noise. 0 = off. For halftones try 2-5.")
         row += 1
         self._widgets["morph_iter"] = LinkedSliderEntry(
             frame_proc, row, "Morph cleanup (iter):", self.morph_iter, "morph_iter",
-            is_int=True, from_=0, to=10, step=1, pad=pad)
+            is_int=True, from_=0, to=10, step=1, pad=pad,
+            tooltip="Morphological operations to clean up the edge mask. Close fills small gaps, open removes specks. 0 = off. 1-2 = light cleanup.")
 
         frame_proc.columnconfigure(1, weight=1)
 
@@ -199,14 +207,18 @@ class Inkspire:
         row = 0
         self._widgets["min_contour_len"] = LinkedSliderEntry(
             frame_cont, row, "Min contour length:", self.min_contour_len, "min_contour_len",
-            is_int=True, from_=1, to=500, step=1, pad=pad)
+            is_int=True, from_=1, to=500, step=1, pad=pad,
+            tooltip="Contours shorter than this (in points) are discarded. Filters out noise fragments. Higher = cleaner but may lose small details.")
         row += 1
         self._widgets["simplify"] = LinkedSliderEntry(
             frame_cont, row, "Simplify (epsilon):", self.simplify, "simplify",
-            is_int=False, from_=0.1, to=10.0, step=0.1, pad=pad)
+            is_int=False, from_=0.1, to=10.0, step=0.1, pad=pad,
+            tooltip="How aggressively contour paths are simplified. Higher = fewer points, faster drawing, but corners get rounded. 0.5 = detailed, 2.0 = aggressive.")
         row += 1
-        ttk.Checkbutton(frame_cont, text="Skeletonize (thin lines to 1px)",
-                        variable=self.use_skeleton).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+        skel_cb = ttk.Checkbutton(frame_cont, text="Skeletonize (thin lines to 1px)",
+                                  variable=self.use_skeleton)
+        skel_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+        Tooltip(skel_cb, "Thin all detected regions to 1px centerlines. Useful when source has thick brush strokes. Off by default.")
         row += 1
         self.btn_suggested = ttk.Button(frame_cont, text="Reset to Suggested",
                                         command=self._apply_suggested, state="disabled")
@@ -221,23 +233,31 @@ class Inkspire:
         row = 0
         self._widgets["scale"] = LinkedSliderEntry(
             frame_draw, row, "Scale:", self.scale, "scale",
-            is_int=False, from_=0.10, to=10.0, step=0.01, pad=pad)
+            is_int=False, from_=0.10, to=10.0, step=0.01, pad=pad,
+            tooltip="Multiply the image dimensions by this factor for drawing. 1.0 = original size. 2.0 = double size.")
         row += 1
         ttk.Label(frame_draw, text="Offset X (px):").grid(row=row, column=0, sticky="w", **pad)
-        ttk.Entry(frame_draw, textvariable=self.offset_x, width=8).grid(row=row, column=1, sticky="w", **pad)
+        ox_entry = ttk.Entry(frame_draw, textvariable=self.offset_x, width=8)
+        ox_entry.grid(row=row, column=1, sticky="w", **pad)
+        Tooltip(ox_entry, "Absolute screen pixel X for the top-left corner of the drawn image.")
 
         row += 1
         ttk.Label(frame_draw, text="Offset Y (px):").grid(row=row, column=0, sticky="w", **pad)
-        ttk.Entry(frame_draw, textvariable=self.offset_y, width=8).grid(row=row, column=1, sticky="w", **pad)
+        oy_entry = ttk.Entry(frame_draw, textvariable=self.offset_y, width=8)
+        oy_entry.grid(row=row, column=1, sticky="w", **pad)
+        Tooltip(oy_entry, "Absolute screen pixel Y for the top-left corner of the drawn image.")
 
         row += 1
-        ttk.Checkbutton(frame_draw, text="Relative to mouse (bottom-left corner)",
-                        variable=self.relative_offset).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+        rel_cb = ttk.Checkbutton(frame_draw, text="Relative to mouse (bottom-left corner)",
+                                 variable=self.relative_offset)
+        rel_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+        Tooltip(rel_cb, "When enabled, ignores Offset X/Y. Your mouse position at draw start becomes the bottom-left corner of the image.")
 
         row += 1
         self._widgets["speed"] = LinkedSliderEntry(
             frame_draw, row, "Speed (s/point):", self.speed, "speed",
-            is_int=False, from_=0.0, to=0.1, step=0.001, pad=pad)
+            is_int=False, from_=0.0, to=0.1, step=0.001, pad=pad,
+            tooltip="Delay in seconds between each point movement. Lower = faster. 0 = maximum speed. If the target app drops strokes, increase this.")
 
         row += 1
         ttk.Label(frame_draw, text="Mouse button:").grid(row=row, column=0, sticky="w", **pad)
@@ -245,10 +265,13 @@ class Inkspire:
         btn_frame.grid(row=row, column=1, sticky="w", **pad)
         ttk.Radiobutton(btn_frame, text="Left", variable=self.mouse_button, value="left").pack(side="left")
         ttk.Radiobutton(btn_frame, text="Right", variable=self.mouse_button, value="right").pack(side="left")
+        Tooltip(btn_frame, "Which button to hold while drawing. Some apps use left, some use right for drawing tools.")
 
         row += 1
         ttk.Label(frame_draw, text="Delay before start (s):").grid(row=row, column=0, sticky="w", **pad)
-        ttk.Entry(frame_draw, textvariable=self.delay_before, width=8).grid(row=row, column=1, sticky="w", **pad)
+        delay_entry = ttk.Entry(frame_draw, textvariable=self.delay_before, width=8)
+        delay_entry.grid(row=row, column=1, sticky="w", **pad)
+        Tooltip(delay_entry, "Seconds of countdown before drawing begins. Use this time to switch to your target application and position your mouse.")
 
         frame_draw.columnconfigure(1, weight=1)
 
