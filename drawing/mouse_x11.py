@@ -3,7 +3,7 @@
 import ctypes
 import sys
 
-__all__ = ["mouse_move", "mouse_down", "mouse_up", "get_mouse_pos", "is_escape_pressed"]
+__all__ = ["mouse_move", "mouse_down", "mouse_up", "get_mouse_pos", "is_key_pressed", "is_escape_pressed"]
 
 _xlib = ctypes.cdll.LoadLibrary("libX11.so.6")
 _xtst = ctypes.cdll.LoadLibrary("libXtst.so.6")
@@ -59,12 +59,15 @@ def get_mouse_pos():
     return root_x.value, root_y.value
 
 
-def is_escape_pressed():
-    if not _escape_keycode:
+def is_key_pressed(keycode):
+    if not keycode:
         return False
     keymap = ctypes.create_string_buffer(32)
     _xlib.XQueryKeymap(_display, keymap)
-    byte_index = _escape_keycode // 8
-    bit_mask = 1 << (_escape_keycode % 8)
-    key_value = keymap.raw[byte_index]
-    return bool(key_value & bit_mask)
+    byte_index = keycode // 8
+    bit_mask = 1 << (keycode % 8)
+    return bool(keymap.raw[byte_index] & bit_mask)
+
+
+def is_escape_pressed():
+    return is_key_pressed(_escape_keycode)
