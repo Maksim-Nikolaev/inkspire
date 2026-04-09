@@ -592,7 +592,13 @@ class Inkspire:
     def _poll_start_key(self):
         pressed = is_key_pressed(self._start_keycode)
         if pressed and not self._start_key_was_pressed:
-            self._start_drawing()
+            state = self.draw_engine.state
+            if state == "idle":
+                self._start_drawing()
+            elif state == "drawing":
+                self.draw_engine.pause()
+            elif state == "paused":
+                self.draw_engine.resume()
         self._start_key_was_pressed = pressed
         self.root.after(100, self._poll_start_key)
 
