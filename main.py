@@ -8,6 +8,19 @@ Platforms: Linux (X11) and Windows.
 Usage: python3 main.py
 """
 
+import sys
+
+# Fix blurry UI and wrong coordinates on Windows with display scaling
+if sys.platform == "win32":
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor DPI aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 import cv2
 import numpy as np
 import tkinter as tk
@@ -15,7 +28,6 @@ from tkinter import filedialog, ttk
 from PIL import Image, ImageTk
 import threading
 import time
-import sys
 from detection.modes import detect_art_bounds, detect_edges
 from detection.contours import extract_contours, skeletonize
 from detection.suggest import compute_suggested
