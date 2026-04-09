@@ -41,6 +41,7 @@ from ui.tooltip import Tooltip
 from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
 from ui.canvas_picker import CanvasPicker
+from ui.keybinds_dialog import KeybindsDialog
 from core.config import load_config, save_config, load_session, save_session
 from core.optimize import optimize_path
 from core.keybinds import resolve_keycode, is_key_pressed
@@ -493,27 +494,6 @@ class Inkspire:
 
         self._frame_draw.columnconfigure(1, weight=1)
 
-        # ── Keybinds ──
-        self._frame_keys = ttk.LabelFrame(self.root, text="Keybinds")
-        self._frame_keys.pack(fill="x", **pad)
-
-        key_row = ttk.Frame(self._frame_keys)
-        key_row.pack(fill="x", **pad)
-
-        ttk.Label(key_row, text="Start / Pause:").pack(side="left", **pad)
-        self._lbl_start_key = ttk.Label(key_row, text=self.config.get("start_key", "F5"),
-                                         width=10, relief="sunken", anchor="center")
-        self._lbl_start_key.pack(side="left", **pad)
-        ttk.Button(key_row, text="Set", width=4,
-                   command=lambda: self._capture_key("start_key", self._lbl_start_key)).pack(side="left", **pad)
-
-        ttk.Label(key_row, text="Cancel:").pack(side="left", padx=(12, 6), pady=3)
-        self._lbl_stop_key = ttk.Label(key_row, text=self.config.get("stop_key", "Escape"),
-                                        width=10, relief="sunken", anchor="center")
-        self._lbl_stop_key.pack(side="left", **pad)
-        ttk.Button(key_row, text="Set", width=4,
-                   command=lambda: self._capture_key("stop_key", self._lbl_stop_key)).pack(side="left", **pad)
-
         # ── Status ──
         self.lbl_status = ttk.Label(self.root, text="Load an image to begin.")
         self.lbl_status.pack(**pad)
@@ -528,6 +508,7 @@ class Inkspire:
         ttk.Button(self._frame_btn, text="Preview", command=self._open_preview).pack(side="left", **pad)
         ttk.Checkbutton(self._frame_btn, text="Live", variable=self.auto_preview).pack(side="left", **pad)
         ttk.Button(self._frame_btn, text="Start Drawing", command=self._start_drawing).pack(side="left", **pad)
+        ttk.Button(self._frame_btn, text="Keybinds", command=self._show_keybinds).pack(side="left", **pad)
         ttk.Button(self._frame_btn, text="About", command=self._show_about).pack(side="left", **pad)
         ttk.Button(self._frame_btn, text="Quit", command=self._quit).pack(side="right", **pad)
 
@@ -694,39 +675,31 @@ class Inkspire:
         if path:
             self._load_svg(path)
 
-    # ── Keybind capture ──
+    # ── Keybinds ──
 
-    def _capture_key(self, config_key, label_widget):
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Press a key")
-        dlg.geometry("250x80")
-        dlg.resizable(False, False)
-        dlg.transient(self.root)
-        dlg.grab_set()
-        ttk.Label(dlg, text="Press any key...", font=("", 12)).pack(expand=True)
+    def _show_keybinds(self):
+        self._polling_paused = True
+        dlg = KeybindsDialog(self.root, self.config, self._on_keybind_update)
+        dlg.win.bind("<Destroy>", lambda e: setattr(self, "_polling_paused", False))
 
-        def on_key(event):
-            key_name = event.keysym
-            dlg.destroy()
-            keycode = resolve_keycode(key_name)
-            if not keycode:
-                self._update_status(f"Key '{key_name}' not supported.")
-                return
-            label_widget.config(text=key_name)
-            self.config[config_key] = key_name
-            if config_key == "start_key":
-                self._start_keycode = keycode
-            elif config_key == "stop_key":
-                stop_check = (lambda: is_key_pressed(keycode))
-                self.draw_engine._cancel_check = stop_check
-            self._update_status(f"Keybind set: {config_key} = {key_name}")
-
-        dlg.bind("<Key>", on_key)
-        dlg.focus_force()
+    def _on_keybind_update(self, config_key, key_name):
+        keycode = resolve_keycode(key_name)
+        if not keycode:
+            self._update_status(f"Key '{key_name}' not supported.")
+            return
+        if config_key == "start_key":
+            self._start_keycode = keycode
+        elif config_key == "stop_key":
+            stop_check = (lambda: is_key_pressed(keycode))
+            self.draw_engine._cancel_check = stop_check
+        self._update_status(f"Keybind set: {config_key} = {key_name}")
 
     # ── Drawing ──
 
     def _poll_start_key(self):
+        if getattr(self, "_polling_paused", False):
+            self.root.after(30, self._poll_start_key)
+            return
         pressed = is_key_pressed(self._start_keycode)
         if pressed and not self._start_key_was_pressed:
             state = self.draw_engine.state
