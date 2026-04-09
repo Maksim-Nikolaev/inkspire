@@ -24,6 +24,8 @@ from detection.modes import detect_art_bounds, detect_edges
 from detection.contours import extract_contours, skeletonize
 from detection.suggest import compute_suggested
 from detection.svg import load_svg
+from detection.text import render_text
+from core.fonts import discover_fonts
 from drawing.engine import DrawEngine
 from ui.about_dialog import AboutDialog
 from ui.crop_dialog import CropDialog
@@ -83,6 +85,11 @@ class Inkspire:
 
         self.input_mode = "image"  # "image", "svg", or "text"
         self.contour_bounds = None  # (width, height) for SVG/text contours
+
+        self.text_input = tk.StringVar(value="")
+        self.font_size = tk.DoubleVar(value=48.0)
+        self.font_path = None
+        self._font_list = []
 
         self.preview = None
 
@@ -154,6 +161,7 @@ class Inkspire:
             var.trace_add("write", lambda *_: self._schedule_preview_update())
         self.use_skeleton.trace_add("write", lambda *_: self._schedule_preview_update())
         self.detect_mode.trace_add("write", lambda *_: self._on_mode_change())
+        self.font_size.trace_add("write", lambda *_: self._on_text_change())
 
     def _on_mode_change(self):
         self._update_mode_visibility()
@@ -194,6 +202,32 @@ class Inkspire:
         ttk.Button(frame_file, text="Re-crop", command=self._recrop).pack(side="right", **pad)
         ttk.Button(frame_file, text="Browse", command=self._browse).pack(side="right", **pad)
         ttk.Button(frame_file, text="Paste", command=self._paste_from_clipboard).pack(side="right", **pad)
+
+        # ── Text Input ──
+        self._frame_text = ttk.LabelFrame(self.root, text="Text to Draw")
+        self._frame_text.pack(fill="x", **pad)
+
+        self._text_box = tk.Text(self._frame_text, height=3, width=40, wrap="word")
+        self._text_box.pack(fill="x", **pad)
+        self._text_box.bind("<KeyRelease>", lambda e: self._on_text_change())
+
+        font_row = ttk.Frame(self._frame_text)
+        font_row.pack(fill="x", **pad)
+        ttk.Label(font_row, text="Font:").pack(side="left")
+        self._font_combo = ttk.Combobox(font_row, state="readonly", width=30)
+        self._font_combo.pack(side="left", padx=4)
+        self._font_combo.bind("<<ComboboxSelected>>", lambda e: self._on_font_change())
+        ttk.Button(font_row, text="Browse...", command=self._browse_font).pack(side="left", padx=4)
+
+        size_row = ttk.Frame(self._frame_text)
+        size_row.pack(fill="x", **pad)
+        self._widgets["font_size"] = LinkedSliderEntry(
+            size_row, 0, "Size (px):", self.font_size, "font_size",
+            is_int=False, from_=8, to=200, step=1, pad=pad,
+            tooltip="Font size in pixels. Controls glyph height.")
+
+        # Populate fonts in background (first scan can be slow)
+        self.root.after(100, self._populate_fonts)
 
         # ── Detection Mode ──
         self._frame_mode = ttk.LabelFrame(self.root, text="Detection Mode")
@@ -597,6 +631,72 @@ class Inkspire:
         self.image_path = "(clipboard)"
         self.lbl_file.config(text="(pasted from clipboard)")
         self._do_crop()
+
+    def _populate_fonts(self):
+        self._font_list = discover_fonts()
+        families = sorted(set(f["family"] for f in self._font_list))
+        self._font_combo["values"] = families
+        if families:
+            self._font_combo.current(0)
+            self._on_font_change()
+
+    def _browse_font(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("Font files", "*.ttf *.otf"), ("All", "*.*")]
+        )
+        if path:
+            self.font_path = path
+            name = path.split("/")[-1].split("\\")[-1]
+            self._font_combo.set(name)
+            self._on_text_change()
+
+    def _on_font_change(self):
+        selected = self._font_combo.get()
+        for f in self._font_list:
+            if f["family"] == selected:
+                self.font_path = f["path"]
+                break
+        self._on_text_change()
+
+    def _on_text_change(self):
+        text = self._text_box.get("1.0", "end-1c").strip()
+        if not text or not self.font_path:
+            return
+
+        self.input_mode = "text"
+        self._update_input_mode_visibility()
+
+        max_w = None
+        if self.contour_bounds:
+            max_w = self.contour_bounds[0]
+
+        try:
+            self.contours = render_text(
+                text, self.font_path, self.font_size.get(),
+                max_width=max_w)
+        except Exception as e:
+            self._update_status(f"Text error: {e}")
+            return
+
+        if not self.contours:
+            self._update_status("No glyphs rendered.")
+            return
+
+        all_pts = np.vstack(self.contours)
+        mins = all_pts.min(axis=0)
+        maxs = all_pts.max(axis=0)
+        self.contour_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
+
+        for i, c in enumerate(self.contours):
+            self.contours[i] = c - mins
+
+        total_points = sum(len(c) for c in self.contours)
+        self.lbl_contours.config(text=f"Contours: {len(self.contours)}, Total points: {total_points}")
+        self.lbl_crop.config(text=f"Text: {self.contour_bounds[0]:.0f}x{self.contour_bounds[1]:.0f}px")
+        self._update_status(f"Text rendered: {len(self.contours)} contours, {total_points} points")
+
+        if self.auto_preview.get():
+            self._open_preview()
 
     def _pick_canvas(self):
         if not self.contours and self.cropped_image is None:
