@@ -83,11 +83,18 @@ class Inkspire:
         self.preview = None
 
         self._build_gui()
-        self.root.bind_all("<F5>", lambda e: self._start_drawing())
         self.root.bind_all("<Escape>", lambda e: self._cancel())
         self.root.bind_all("<Control-v>", lambda e: self._paste_from_clipboard())
         self._setup_traces()
         self._update_mode_visibility()
+
+        # Global hotkey polling (works even when another app has focus)
+        start_keycode = resolve_keycode(self.config.get("start_key", "F5"))
+        self._start_keycode = start_keycode
+        self._start_key_was_pressed = False
+        if start_keycode:
+            self._poll_start_key()
+
         self.root.mainloop()
 
     def _sync_all_widgets(self):
@@ -415,6 +422,13 @@ class Inkspire:
         self.preview.render(self.contours, self.scale.get(), self.cropped_image.shape[:2])
 
     # ── Drawing ──
+
+    def _poll_start_key(self):
+        pressed = is_key_pressed(self._start_keycode)
+        if pressed and not self._start_key_was_pressed:
+            self._start_drawing()
+        self._start_key_was_pressed = pressed
+        self.root.after(100, self._poll_start_key)
 
     def _start_drawing(self):
         if not self.contours:
