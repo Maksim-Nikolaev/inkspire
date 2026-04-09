@@ -1,32 +1,39 @@
 # Inkspire
 
-Inkspire traces line art by moving the mouse along contours extracted from an
-image. It uses fast, jitter-free X11 `ctypes` calls for mouse control, making
-it suitable for driving drawing applications that accept synthetic pointer
-input.
-
-> **Status:** early prototype. Source lives in `main.py` with supporting
-> modules under `ui/`, `detection/`, and `drawing/`.
+Inkspire traces line art by moving the mouse along contours extracted from
+images, SVGs, or text. It drives drawing applications that accept synthetic
+pointer input, using native `ctypes` calls for low-latency mouse control on
+both Linux (X11) and Windows.
 
 ## Features
 
-- Multiple detection modes for black & white line art, colored images, and
-  halftones.
-- Direct X11 mouse control via `libX11` / `libXtst` for low-latency tracing.
-- Simple Tkinter GUI for loading images and starting/stopping traces.
-- Escape key interrupt for aborting an in-progress trace.
+- **Multiple detection modes** — threshold, Canny edge, adaptive threshold,
+  and auto-detect for black & white line art, colored images, and halftones.
+- **Text and SVG input** — render text from system fonts or load SVG paths
+  directly, in a separate tab with independent settings.
+- **Cross-platform** — Linux (X11) and Windows, with native mouse and
+  keyboard control via `ctypes`.
+- **Canvas picker** — drag-to-select your target drawing area on screen.
+- **Live preview** — real-time contour preview with adjustable parameters.
+- **Pause/resume** — F5 toggles start, pause, and resume. Escape cancels.
+- **Path optimization** — optional nearest-neighbor reordering to minimize
+  pen-up travel between contours.
+- **Session persistence** — settings, source file, and tab state are
+  restored automatically on next launch.
+- **Customizable keybinds** — reassign start/pause and cancel keys from
+  the Keybinds dialog.
 
 ## Requirements
 
-- Linux with an X11 session (Wayland is not supported).
-- Python 3.9+
-- System packages:
+- Python 3.10+
+- **Linux:** X11 session, system packages:
   ```bash
   sudo apt install python3-tk python3-pil.imagetk libx11-6 libxtst6 xclip
   ```
+- **Windows:** no extra system packages needed.
 - Python packages:
   ```bash
-  pip install -r requirements.txt
+  pip install .
   ```
 
 ## Usage
@@ -35,13 +42,10 @@ input.
 python3 main.py
 ```
 
-> **Note:** On some X11 configurations, mouse synthesis may require running
-> with `sudo`. Try without first.
-
-1. Load an image via the GUI.
-2. Pick a detection mode appropriate for the artwork.
-3. Position the target application (e.g. a drawing canvas).
-4. Start the trace. Press **Escape** at any time to abort.
+1. Load an image, paste from clipboard, browse an SVG, or type text.
+2. Adjust detection mode and parameters (live preview updates automatically).
+3. Optionally use **Set Canvas** to drag-select your target drawing area.
+4. Press **F5** (or click Start Drawing) to begin. F5 pauses/resumes, Escape cancels.
 
 ## License
 
