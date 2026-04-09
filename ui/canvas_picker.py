@@ -1,6 +1,7 @@
 """Screen region picker for defining the drawing canvas target."""
 
 import tkinter as tk
+from PIL import Image, ImageTk
 
 __all__ = ["CanvasPicker"]
 
@@ -10,30 +11,47 @@ class CanvasPicker:
         self.on_complete = on_complete
         self.first_click = None
 
+        # Capture a screenshot to use as the overlay background
+        screen_w = parent.winfo_screenwidth()
+        screen_h = parent.winfo_screenheight()
+        try:
+            from PIL import ImageGrab
+            screenshot = ImageGrab.grab(bbox=(0, 0, screen_w, screen_h))
+        except Exception:
+            screenshot = Image.new("RGB", (screen_w, screen_h), "black")
+
         self.overlay = tk.Toplevel(parent)
-        self.overlay.attributes("-fullscreen", True)
-        self.overlay.attributes("-alpha", 0.3)
-        self.overlay.configure(bg="black")
+        self.overlay.overrideredirect(True)
+        self.overlay.geometry(f"{screen_w}x{screen_h}+0+0")
         self.overlay.attributes("-topmost", True)
 
         self.canvas = tk.Canvas(self.overlay, highlightthickness=0,
-                                bg="black", cursor="crosshair")
-        self.canvas.pack(fill="both", expand=True)
+                                width=screen_w, height=screen_h, cursor="crosshair")
+        self.canvas.pack()
 
-        self.label = tk.Label(
-            self.overlay, text="Click the TOP-LEFT corner of your canvas",
-            fg="white", bg="black", font=("", 14))
-        self.label.place(relx=0.5, rely=0.1, anchor="center")
+        self._bg_img = ImageTk.PhotoImage(screenshot)
+        self.canvas.create_image(0, 0, anchor="nw", image=self._bg_img)
+
+        # Semi-transparent dark tint over the screenshot
+        self._tint = self.canvas.create_rectangle(
+            0, 0, screen_w, screen_h, fill="black", stipple="gray25")
+
+        self.label = self.canvas.create_text(
+            screen_w // 2, 60,
+            text="Click the TOP-LEFT corner of your canvas (Esc to cancel)",
+            fill="white", font=("", 14))
 
         self._rect = None
         self.canvas.bind("<ButtonPress-1>", self._on_click)
         self.canvas.bind("<Motion>", self._on_motion)
         self.overlay.bind("<Escape>", lambda e: self._cancel())
+        self.overlay.focus_force()
 
     def _on_click(self, event):
         if self.first_click is None:
             self.first_click = (event.x_root, event.y_root)
-            self.label.config(text="Click the BOTTOM-RIGHT corner of your canvas")
+            self.canvas.itemconfig(self.label,
+                text="Click the BOTTOM-RIGHT corner of your canvas")
         else:
             x1, y1 = self.first_click
             x2, y2 = event.x_root, event.y_root

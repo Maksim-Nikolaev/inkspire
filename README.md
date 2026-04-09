@@ -22,7 +22,7 @@ input.
 - Python 3.9+
 - System packages:
   ```bash
-  sudo apt install python3-tk python3-pil.imagetk libx11-6 libxtst6
+  sudo apt install python3-tk python3-pil.imagetk libx11-6 libxtst6 xclip
   ```
 - Python packages:
   ```bash

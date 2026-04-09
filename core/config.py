@@ -11,6 +11,14 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULTS = {
     "stop_key": "Escape",
     "start_key": "F5",
+    "scale": 1.0,
+    "offset_x": 200,
+    "offset_y": 200,
+    "speed": 0.02,
+    "mouse_button": "right",
+    "delay_before": 3,
+    "relative_offset": True,
+    "auto_preview": True,
 }
 
 

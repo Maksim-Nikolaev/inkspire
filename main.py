@@ -30,7 +30,7 @@ from ui.tooltip import Tooltip
 from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
 from ui.canvas_picker import CanvasPicker
-from core.config import load_config
+from core.config import load_config, save_config
 from core.keybinds import resolve_keycode
 from drawing.mouse_x11 import is_key_pressed
 
@@ -59,11 +59,12 @@ class Inkspire:
         # Detection mode
         self.detect_mode = tk.StringVar(value="Auto")
 
-        # Settings
-        self.scale = tk.DoubleVar(value=1.00)
-        self.offset_x = tk.IntVar(value=200)
-        self.offset_y = tk.IntVar(value=200)
-        self.speed = tk.DoubleVar(value=0.02)
+        # Settings (drawing settings loaded from config, detection defaults are fixed)
+        cfg = self.config
+        self.scale = tk.DoubleVar(value=cfg.get("scale", 1.0))
+        self.offset_x = tk.IntVar(value=cfg.get("offset_x", 200))
+        self.offset_y = tk.IntVar(value=cfg.get("offset_y", 200))
+        self.speed = tk.DoubleVar(value=cfg.get("speed", 0.02))
         self.threshold = tk.IntVar(value=128)
         self.canny_lo = tk.IntVar(value=50)
         self.canny_hi = tk.IntVar(value=150)
@@ -73,11 +74,11 @@ class Inkspire:
         self.morph_iter = tk.IntVar(value=0)
         self.min_contour_len = tk.IntVar(value=10)
         self.simplify = tk.DoubleVar(value=1.0)
-        self.mouse_button = tk.StringVar(value="right")
-        self.delay_before = tk.IntVar(value=3)
+        self.mouse_button = tk.StringVar(value=cfg.get("mouse_button", "right"))
+        self.delay_before = tk.IntVar(value=cfg.get("delay_before", 3))
         self.use_skeleton = tk.BooleanVar(value=False)
-        self.relative_offset = tk.BooleanVar(value=True)
-        self.auto_preview = tk.BooleanVar(value=True)
+        self.relative_offset = tk.BooleanVar(value=cfg.get("relative_offset", True))
+        self.auto_preview = tk.BooleanVar(value=cfg.get("auto_preview", True))
 
         self.preview = None
 
@@ -442,26 +443,54 @@ class Inkspire:
         AboutDialog(self.root)
 
     def _paste_from_clipboard(self):
+        import subprocess
+        import io
+
+        img = None
+
+        # Try PIL ImageGrab first (works if xclip or wl-paste is installed)
         try:
             from PIL import ImageGrab
             img = ImageGrab.grabclipboard()
         except Exception:
-            img = None
+            pass
 
+        # Fallback: xclip
+        if img is None:
+            for mime in ["image/png", "image/bmp", "image/jpeg"]:
+                try:
+                    data = subprocess.check_output(
+                        ["xclip", "-selection", "clipboard", "-t", mime, "-o"],
+                        stderr=subprocess.DEVNULL)
+                    img = Image.open(io.BytesIO(data))
+                    break
+                except Exception:
+                    continue
+
+        # Fallback: xsel
         if img is None:
             try:
-                import subprocess
                 data = subprocess.check_output(
-                    ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
+                    ["xsel", "--clipboard", "--output"],
                     stderr=subprocess.DEVNULL)
-                from PIL import Image
-                import io
                 img = Image.open(io.BytesIO(data))
             except Exception:
-                self._update_status("No image found in clipboard.")
-                return
+                pass
 
-        import numpy as np
+        # Fallback: wl-paste (Wayland)
+        if img is None:
+            try:
+                data = subprocess.check_output(
+                    ["wl-paste", "--type", "image/png"],
+                    stderr=subprocess.DEVNULL)
+                img = Image.open(io.BytesIO(data))
+            except Exception:
+                pass
+
+        if img is None:
+            self._update_status("No image in clipboard. Install xclip: sudo apt install xclip")
+            return
+
         rgb = np.array(img.convert("RGB"))
         self.gray_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         self.image_path = "(clipboard)"
@@ -485,6 +514,17 @@ class Inkspire:
         self._update_status(f"Canvas set: {width}x{height} at ({x},{y}), scale={self.scale.get():.3f}")
 
     def _quit(self):
+        self.config.update({
+            "scale": self.scale.get(),
+            "offset_x": self.offset_x.get(),
+            "offset_y": self.offset_y.get(),
+            "speed": self.speed.get(),
+            "mouse_button": self.mouse_button.get(),
+            "delay_before": self.delay_before.get(),
+            "relative_offset": self.relative_offset.get(),
+            "auto_preview": self.auto_preview.get(),
+        })
+        save_config(self.config)
         self.root.destroy()
         sys.exit(0)
 
