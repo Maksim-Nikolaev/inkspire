@@ -14,7 +14,7 @@ DEFAULTS = {
     "scale": 1.0,
     "offset_x": 200,
     "offset_y": 200,
-    "speed": 0.02,
+    "speed": 500,
     "mouse_button": "right",
     "delay_before": 3,
     "relative_offset": True,
@@ -30,6 +30,10 @@ def load_config() -> dict:
                 config.update(json.load(f))
         except (json.JSONDecodeError, OSError):
             pass
+    # Migrate old seconds-per-point speed to pts/s
+    if config.get("speed", 500) < 1:
+        old = config["speed"]
+        config["speed"] = max(10, min(10000, int(1.0 / old))) if old > 0 else 500
     return config
 
 

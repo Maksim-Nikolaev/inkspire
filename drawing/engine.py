@@ -33,7 +33,8 @@ class DrawEngine:
                 return
 
         s = params["scale"]
-        spd = params["speed"]
+        pts_per_sec = params["speed"]
+        delay = (1.0 / pts_per_sec) if pts_per_sec > 0 else 0
         btn = 1 if params["mouse_button"] == "left" else 3
 
         if params["relative_to_mouse"]:
@@ -63,7 +64,7 @@ class DrawEngine:
                     mouse_up(btn)
                     break
                 mouse_move(pt[0], pt[1])
-                if spd > 0 and not self._sleep_with_cancel(spd):
+                if delay > 0 and not self._sleep_with_cancel(delay):
                     mouse_up(btn)
                     break
             mouse_up(btn)

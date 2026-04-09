@@ -78,7 +78,7 @@ class Inkspire:
         self.scale = tk.DoubleVar(value=cfg.get("scale", 1.0))
         self.offset_x = tk.IntVar(value=cfg.get("offset_x", 200))
         self.offset_y = tk.IntVar(value=cfg.get("offset_y", 200))
-        self.speed = tk.DoubleVar(value=cfg.get("speed", 0.02))
+        self.speed = tk.IntVar(value=cfg.get("speed", 500))
         self.threshold = tk.IntVar(value=128)
         self.canny_lo = tk.IntVar(value=50)
         self.canny_hi = tk.IntVar(value=150)
@@ -384,9 +384,9 @@ class Inkspire:
 
         row += 1
         self._widgets["speed"] = LinkedSliderEntry(
-            self._frame_draw, row, "Speed (s/point):", self.speed, "speed",
-            is_int=False, from_=0.0, to=0.1, step=0.001, pad=pad,
-            tooltip="Delay in seconds between each point movement. Lower = faster. 0 = maximum speed. If the target app drops strokes, increase this.")
+            self._frame_draw, row, "Speed (pts/s):", self.speed, "speed",
+            is_int=True, from_=0, to=10000, step=10, pad=pad,
+            tooltip="Drawing speed in points per second. Higher = faster. 0 = maximum speed (no delay).")
 
         row += 1
         ttk.Label(self._frame_draw, text="Mouse button:").grid(row=row, column=0, sticky="w", **pad)
