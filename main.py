@@ -24,6 +24,7 @@ from detection.modes import detect_art_bounds, detect_edges
 from detection.contours import extract_contours, skeletonize
 from detection.suggest import compute_suggested
 from drawing.engine import DrawEngine
+from ui.about_dialog import AboutDialog
 from ui.crop_dialog import CropDialog
 from ui.tooltip import Tooltip
 from ui.widgets import LinkedSliderEntry
@@ -289,6 +290,7 @@ class Inkspire:
         ttk.Button(frame_btn, text="Preview", command=self._open_preview).pack(side="left", **pad)
         ttk.Checkbutton(frame_btn, text="Live", variable=self.auto_preview).pack(side="left", **pad)
         ttk.Button(frame_btn, text="Start Drawing", command=self._start_drawing).pack(side="left", **pad)
+        ttk.Button(frame_btn, text="About", command=self._show_about).pack(side="left", **pad)
         ttk.Button(frame_btn, text="Quit", command=self._quit).pack(side="right", **pad)
 
     # ── Image Loading, Crop, Auto-propose ──
@@ -420,6 +422,9 @@ class Inkspire:
 
     def _cancel(self):
         self.draw_engine.cancel()
+
+    def _show_about(self):
+        AboutDialog(self.root)
 
     def _quit(self):
         self.root.destroy()
