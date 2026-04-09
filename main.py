@@ -79,7 +79,7 @@ class Inkspire:
         self.scale = tk.DoubleVar(value=cfg.get("scale", 1.0))
         self.offset_x = tk.IntVar(value=cfg.get("offset_x", 200))
         self.offset_y = tk.IntVar(value=cfg.get("offset_y", 200))
-        self.speed = tk.IntVar(value=cfg.get("speed", 500))
+        self.speed = tk.IntVar(value=cfg.get("speed", 50))
         self.threshold = tk.IntVar(value=128)
         self.canny_lo = tk.IntVar(value=50)
         self.canny_hi = tk.IntVar(value=150)
@@ -242,7 +242,7 @@ class Inkspire:
                 else:
                     self.root.after(100, lambda: self._load_image(source))
             else:
-                self._update_status(f"Session file not found: {source}")
+                self.image_path = None
 
     # ── Traces for live preview ──
 
@@ -463,8 +463,8 @@ class Inkspire:
         row += 1
         self._widgets["speed"] = LinkedSliderEntry(
             self._frame_draw, row, "Speed (pts/s):", self.speed, "speed",
-            is_int=True, from_=0, to=10000, step=10, pad=pad,
-            tooltip="Drawing speed in points per second. Higher = faster. 0 = maximum speed (no delay).")
+            is_int=True, from_=0, to=200, step=1, pad=pad,
+            tooltip="Drawing speed in points per second. Higher = faster. 0 = maximum speed (no delay). Default: 50.")
 
         row += 1
         ttk.Label(self._frame_draw, text="Mouse button:").grid(row=row, column=0, sticky="w", **pad)
@@ -678,7 +678,7 @@ class Inkspire:
             elif state == "paused":
                 self.draw_engine.resume()
         self._start_key_was_pressed = pressed
-        self.root.after(100, self._poll_start_key)
+        self.root.after(30, self._poll_start_key)
 
     def _start_drawing(self):
         if not self.contours and self.input_mode == "image":

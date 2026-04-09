@@ -56,18 +56,29 @@ class DrawEngine:
             self._pause_event.set()
 
     def _run_inner(self, contours, params):
-        delay = params["delay_before_start"]
-        for i in range(delay, 0, -1):
+        pts_per_sec = params["speed"]
+        total_pts = sum(len(c) for c in contours)
+        if pts_per_sec > 0:
+            eta_sec = total_pts / pts_per_sec
+            if eta_sec >= 60:
+                eta_str = f"~{int(eta_sec // 60)}m {int(eta_sec % 60)}s"
+            else:
+                eta_str = f"~{int(eta_sec)}s"
+            eta_msg = f" — ETA {eta_str}"
+        else:
+            eta_msg = ""
+
+        countdown = params["delay_before_start"]
+        for i in range(countdown, 0, -1):
             if self._should_cancel():
                 self.on_status("Cancelled.")
                 return
-            self.on_status(f"Starting in {i}... switch to your canvas! (Esc to cancel)")
+            self.on_status(f"Starting in {i}{eta_msg} — switch to your canvas! (Esc to cancel)")
             if not self._sleep_with_cancel(1.0):
                 self.on_status("Cancelled.")
                 return
 
         s = params["scale"]
-        pts_per_sec = params["speed"]
         delay = (1.0 / pts_per_sec) if pts_per_sec > 0 else 0
         btn = 1 if params["mouse_button"] == "left" else 3
 
@@ -79,21 +90,10 @@ class DrawEngine:
             ox, oy = params["offset_x"], params["offset_y"]
 
         total = len(contours)
-        total_pts = sum(len(c) for c in contours)
         for idx, contour in enumerate(contours):
             if self._should_cancel():
                 break
-            drawn_pts = sum(len(contours[i]) for i in range(idx))
-            remaining_pts = total_pts - drawn_pts
-            if pts_per_sec > 0:
-                eta_sec = remaining_pts / pts_per_sec
-                if eta_sec >= 60:
-                    eta_str = f"~{int(eta_sec // 60)}m {int(eta_sec % 60)}s remaining"
-                else:
-                    eta_str = f"~{int(eta_sec)}s remaining"
-                self.on_status(f"Drawing contour {idx + 1}/{total} — {eta_str}")
-            else:
-                self.on_status(f"Drawing contour {idx + 1}/{total}")
+            self.on_status(f"Drawing contour {idx + 1}/{total}")
 
             pts = contour.astype(np.float64) * s
             pts[:, 0] += ox
@@ -143,7 +143,7 @@ class DrawEngine:
         while not self._pause_event.is_set():
             if self._should_cancel():
                 return False
-            self._pause_event.wait(timeout=0.1)
+            self._pause_event.wait(timeout=0.05)
         return not self._should_cancel()
 
     def _sleep_with_cancel(self, duration, interval=0.02):
