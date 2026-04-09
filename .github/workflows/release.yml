@@ -14,9 +14,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-            artifact: inkspire-linux
+            name: linux
           - os: windows-latest
-            artifact: inkspire-windows
+            name: windows
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -32,20 +32,18 @@ jobs:
       - name: Build executable
         run: pyinstaller inkspire.spec
 
-      - name: Package artifact (Linux)
+      - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
           chmod +x dist/inkspire
-          tar -czf dist/${{ matrix.artifact }}.tar.gz -C dist inkspire
-
-      - name: Rename artifact (Windows)
-        if: runner.os == 'Windows'
-        run: mv dist/inkspire.exe dist/${{ matrix.artifact }}.exe
+          tar -czf dist/inkspire.tar.gz -C dist inkspire
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}*
+          name: inkspire-${{ matrix.name }}
+          path: |
+            dist/inkspire.tar.gz
+            dist/inkspire.exe
           if-no-files-found: error
 
   release:
@@ -60,6 +58,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/inkspire-linux/inkspire-linux.tar.gz
-            artifacts/inkspire-windows/inkspire-windows.exe
+            artifacts/inkspire-linux/inkspire.tar.gz
+            artifacts/inkspire-windows/inkspire.exe
           generate_release_notes: true
