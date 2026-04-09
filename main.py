@@ -102,6 +102,7 @@ class Inkspire:
         self._font_list = []
 
         self.preview = None
+        self._restoring_session = False
 
         self._build_gui()
         self.root.bind_all("<Escape>", lambda e: self._cancel())
@@ -237,10 +238,16 @@ class Inkspire:
         if source and source != "(clipboard)":
             import os
             if os.path.exists(source):
-                if source.lower().endswith(".svg"):
-                    self.root.after(100, lambda: self._load_svg(source))
-                else:
-                    self.root.after(100, lambda: self._load_image(source))
+                self._restoring_session = True
+                def _restore_source():
+                    try:
+                        if source.lower().endswith(".svg"):
+                            self._load_svg(source)
+                        else:
+                            self._load_image(source)
+                    finally:
+                        self._restoring_session = False
+                self.root.after(100, _restore_source)
             else:
                 self.image_path = None
 
@@ -575,7 +582,8 @@ class Inkspire:
             self.cropped_image = self.gray_image[y:y + ch, x:x + cw].copy()
             self.lbl_crop.config(text=f"Crop: ({x},{y}) {cw}x{ch}px from {w}x{h}px original")
 
-        self._apply_suggested()
+        if not self._restoring_session:
+            self._apply_suggested()
         self._extract_contours()
         if self.auto_preview.get():
             self._open_preview()
