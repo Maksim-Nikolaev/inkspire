@@ -32,9 +32,11 @@ jobs:
       - name: Build executable
         run: pyinstaller inkspire.spec
 
-      - name: Rename artifact (Linux)
+      - name: Package artifact (Linux)
         if: runner.os == 'Linux'
-        run: mv dist/inkspire dist/${{ matrix.artifact }}
+        run: |
+          chmod +x dist/inkspire
+          tar -czf dist/${{ matrix.artifact }}.tar.gz -C dist inkspire
 
       - name: Rename artifact (Windows)
         if: runner.os == 'Windows'
@@ -44,6 +46,7 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}*
+          if-no-files-found: error
 
   release:
     needs: build
@@ -57,6 +60,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/inkspire-linux/inkspire-linux
+            artifacts/inkspire-linux/inkspire-linux.tar.gz
             artifacts/inkspire-windows/inkspire-windows.exe
           generate_release_notes: true
