@@ -50,7 +50,10 @@ class Inkspire:
         self.image_path = None
         self.gray_image = None
         self.cropped_image = None
-        self.contours = []
+        self._image_contours = []
+        self._image_bounds = None
+        self._textsvg_contours = []
+        self._textsvg_bounds = None
         self._preview_timer = None
         self.config = load_config()
         stop_keycode = resolve_keycode(self.config.get("stop_key", "Escape"))
@@ -83,11 +86,8 @@ class Inkspire:
         self.relative_offset = tk.BooleanVar(value=cfg.get("relative_offset", True))
         self.auto_preview = tk.BooleanVar(value=cfg.get("auto_preview", True))
 
-        self.input_mode = "image"  # "image", "svg", or "text"
-        self.contour_bounds = None  # (width, height) for SVG/text contours
-
         self.text_input = tk.StringVar(value="")
-        self.font_size = tk.DoubleVar(value=48.0)
+        self.font_size = tk.IntVar(value=48)
         self.font_path = None
         self._font_list = []
 
@@ -95,7 +95,7 @@ class Inkspire:
 
         self._build_gui()
         self.root.bind_all("<Escape>", lambda e: self._cancel())
-        self.root.bind_all("<Control-v>", lambda e: self._paste_from_clipboard())
+        self.root.bind_all("<Control-v>", self._on_ctrl_v)
         self._setup_traces()
         self._update_mode_visibility()
 
@@ -107,6 +107,34 @@ class Inkspire:
             self._poll_start_key()
 
         self.root.mainloop()
+
+    @property
+    def input_mode(self):
+        if hasattr(self, "_notebook"):
+            return "image" if self._notebook.index("current") == 0 else "textsvg"
+        return "image"
+
+    @property
+    def contours(self):
+        return self._image_contours if self.input_mode == "image" else self._textsvg_contours
+
+    @contours.setter
+    def contours(self, value):
+        if self.input_mode == "image":
+            self._image_contours = value
+        else:
+            self._textsvg_contours = value
+
+    @property
+    def contour_bounds(self):
+        return self._image_bounds if self.input_mode == "image" else self._textsvg_bounds
+
+    @contour_bounds.setter
+    def contour_bounds(self, value):
+        if self.input_mode == "image":
+            self._image_bounds = value
+        else:
+            self._textsvg_bounds = value
 
     def _sync_all_widgets(self):
         for w in self._widgets.values():
@@ -129,25 +157,11 @@ class Inkspire:
         self._set_widget_visible("adaptive_block", mode in ("Adaptive Threshold", "Auto"))
         self._set_widget_visible("adaptive_c", mode in ("Adaptive Threshold", "Auto"))
 
-    def _update_input_mode_visibility(self):
-        show_detection = self.input_mode == "image"
-        for frame in (self._frame_mode, self._frame_det, self._frame_proc, self._frame_cont):
-            frame.pack_forget()
-        self._frame_draw.pack_forget()
-        self.lbl_status.pack_forget()
-        self.lbl_contours.pack_forget()
-        self.lbl_crop.pack_forget()
-        self._frame_btn.pack_forget()
-
-        pad = {"padx": 6, "pady": 3}
-        if show_detection:
-            for frame in (self._frame_mode, self._frame_det, self._frame_proc, self._frame_cont):
-                frame.pack(fill="x", **pad)
-        self._frame_draw.pack(fill="x", **pad)
-        self.lbl_status.pack(**pad)
-        self.lbl_contours.pack(**pad)
-        self.lbl_crop.pack(**pad)
-        self._frame_btn.pack(fill="x", **pad)
+    def _on_tab_change(self):
+        if self.input_mode == "textsvg" and not self._font_list:
+            self.root.after(50, self._populate_fonts)
+        if self.preview and self.preview.is_open():
+            self._update_live_preview()
 
     # ── Traces for live preview ──
 
@@ -194,8 +208,16 @@ class Inkspire:
     def _build_gui(self):
         pad = {"padx": 6, "pady": 3}
 
-        # ── File ──
-        frame_file = ttk.LabelFrame(self.root, text="Image")
+        # ── Tabbed Input ──
+        self._notebook = ttk.Notebook(self.root)
+        self._notebook.pack(fill="x", **pad)
+        self._notebook.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_change())
+
+        # -- Image Tab --
+        tab_image = ttk.Frame(self._notebook)
+        self._notebook.add(tab_image, text="Image")
+
+        frame_file = ttk.Frame(tab_image)
         frame_file.pack(fill="x", **pad)
         self.lbl_file = ttk.Label(frame_file, text="No file selected")
         self.lbl_file.pack(side="left", **pad)
@@ -203,34 +225,8 @@ class Inkspire:
         ttk.Button(frame_file, text="Browse", command=self._browse).pack(side="right", **pad)
         ttk.Button(frame_file, text="Paste", command=self._paste_from_clipboard).pack(side="right", **pad)
 
-        # ── Text Input ──
-        self._frame_text = ttk.LabelFrame(self.root, text="Text to Draw")
-        self._frame_text.pack(fill="x", **pad)
-
-        self._text_box = tk.Text(self._frame_text, height=3, width=40, wrap="word")
-        self._text_box.pack(fill="x", **pad)
-        self._text_box.bind("<KeyRelease>", lambda e: self._on_text_change())
-
-        font_row = ttk.Frame(self._frame_text)
-        font_row.pack(fill="x", **pad)
-        ttk.Label(font_row, text="Font:").pack(side="left")
-        self._font_combo = ttk.Combobox(font_row, state="readonly", width=30)
-        self._font_combo.pack(side="left", padx=4)
-        self._font_combo.bind("<<ComboboxSelected>>", lambda e: self._on_font_change())
-        ttk.Button(font_row, text="Browse...", command=self._browse_font).pack(side="left", padx=4)
-
-        size_row = ttk.Frame(self._frame_text)
-        size_row.pack(fill="x", **pad)
-        self._widgets["font_size"] = LinkedSliderEntry(
-            size_row, 0, "Size (px):", self.font_size, "font_size",
-            is_int=False, from_=8, to=200, step=1, pad=pad,
-            tooltip="Font size in pixels. Controls glyph height.")
-
-        # Populate fonts in background (first scan can be slow)
-        self.root.after(100, self._populate_fonts)
-
         # ── Detection Mode ──
-        self._frame_mode = ttk.LabelFrame(self.root, text="Detection Mode")
+        self._frame_mode = ttk.LabelFrame(tab_image, text="Detection Mode")
         self._frame_mode.pack(fill="x", **pad)
 
         mode_row = ttk.Frame(self._frame_mode)
@@ -239,7 +235,7 @@ class Inkspire:
             ttk.Radiobutton(mode_row, text=m, variable=self.detect_mode, value=m).pack(side="left", padx=4)
 
         # ── Detection Parameters ──
-        self._frame_det = ttk.LabelFrame(self.root, text="Detection Parameters")
+        self._frame_det = ttk.LabelFrame(tab_image, text="Detection Parameters")
         self._frame_det.pack(fill="x", **pad)
 
         row = 0
@@ -271,7 +267,7 @@ class Inkspire:
         self._frame_det.columnconfigure(1, weight=1)
 
         # ── Pre/Post Processing ──
-        self._frame_proc = ttk.LabelFrame(self.root, text="Pre/Post Processing")
+        self._frame_proc = ttk.LabelFrame(tab_image, text="Pre/Post Processing")
         self._frame_proc.pack(fill="x", **pad)
 
         row = 0
@@ -288,7 +284,7 @@ class Inkspire:
         self._frame_proc.columnconfigure(1, weight=1)
 
         # ── Contour Settings ──
-        self._frame_cont = ttk.LabelFrame(self.root, text="Contour Settings")
+        self._frame_cont = ttk.LabelFrame(tab_image, text="Contour Settings")
         self._frame_cont.pack(fill="x", **pad)
 
         row = 0
@@ -312,6 +308,44 @@ class Inkspire:
         self.btn_suggested.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
 
         self._frame_cont.columnconfigure(1, weight=1)
+
+        # -- Text / SVG Tab --
+        tab_text = ttk.Frame(self._notebook)
+        self._notebook.add(tab_text, text="Text / SVG")
+
+        frame_svg = ttk.Frame(tab_text)
+        frame_svg.pack(fill="x", **pad)
+        ttk.Label(frame_svg, text="SVG:").pack(side="left", **pad)
+        ttk.Button(frame_svg, text="Browse SVG", command=self._browse_svg).pack(side="left", **pad)
+
+        frame_text = ttk.LabelFrame(tab_text, text="Text Input")
+        frame_text.pack(fill="x", **pad)
+
+        font_row = ttk.Frame(frame_text)
+        font_row.pack(fill="x", **pad)
+        ttk.Label(font_row, text="Font:").pack(side="left", **pad)
+        self._font_combo = ttk.Combobox(font_row, width=30, state="readonly")
+        self._font_combo.pack(side="left", **pad)
+        self._font_combo.bind("<<ComboboxSelected>>", lambda e: self._on_font_change())
+        ttk.Button(font_row, text="Browse…", command=self._browse_font).pack(side="left", **pad)
+        ttk.Button(font_row, text="Scan Fonts", command=self._populate_fonts).pack(side="left", **pad)
+
+        size_row = ttk.Frame(frame_text)
+        size_row.pack(fill="x", **pad)
+        ttk.Label(size_row, text="Size (px):").pack(side="left", **pad)
+        ttk.Scale(size_row, variable=self.font_size, from_=8, to=200,
+                  orient="horizontal",
+                  command=lambda v: self.font_size.set(round(float(v)))
+                  ).pack(side="left", fill="x", expand=True, **pad)
+        ttk.Entry(size_row, textvariable=self.font_size, width=5).pack(side="left", **pad)
+
+        self._text_box = tk.Text(frame_text, height=4, width=40)
+        self._text_box.pack(fill="x", **pad)
+        self._text_box.bind("<KeyRelease>", lambda e: self._on_text_change())
+
+        btn_text_row = ttk.Frame(tab_text)
+        btn_text_row.pack(fill="x", **pad)
+        ttk.Button(btn_text_row, text="Preview", command=self._preview_text_svg).pack(side="left", **pad)
 
         # ── Drawing Settings ──
         self._frame_draw = ttk.LabelFrame(self.root, text="Drawing Settings")
@@ -408,38 +442,29 @@ class Inkspire:
             self.lbl_status.config(text="Error: could not read image.")
             return
         self.lbl_file.config(text=path.split("/")[-1])
-        self.input_mode = "image"
-        self.contour_bounds = None
-        self._update_input_mode_visibility()
+        self._image_bounds = None
         self._do_crop()
 
     def _load_svg(self, path):
         try:
-            self.contours = load_svg(path)
+            contours = load_svg(path)
         except Exception as e:
             self.lbl_status.config(text=f"SVG error: {e}")
             return
-        if not self.contours:
+        if not contours:
             self.lbl_status.config(text="No paths found in SVG.")
             return
-        self.image_path = path
-        self.gray_image = None
-        self.cropped_image = None
-        self.input_mode = "svg"
 
-        all_pts = np.vstack(self.contours)
+        all_pts = np.vstack(contours)
         mins = all_pts.min(axis=0)
         maxs = all_pts.max(axis=0)
-        self.contour_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
-        for i, c in enumerate(self.contours):
-            self.contours[i] = c - mins
+        self._textsvg_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
+        self._textsvg_contours = [c - mins for c in contours]
 
-        total_points = sum(len(c) for c in self.contours)
-        self.lbl_file.config(text=path.split("/")[-1])
-        self.lbl_contours.config(text=f"Contours: {len(self.contours)}, Total points: {total_points}")
-        self.lbl_crop.config(text=f"SVG: {self.contour_bounds[0]:.0f}x{self.contour_bounds[1]:.0f}")
-        self._update_input_mode_visibility()
-        self._update_status(f"Loaded SVG with {len(self.contours)} paths.")
+        total_points = sum(len(c) for c in self._textsvg_contours)
+        self.lbl_contours.config(text=f"Contours: {len(self._textsvg_contours)}, Total points: {total_points}")
+        self.lbl_crop.config(text=f"SVG: {self._textsvg_bounds[0]:.0f}x{self._textsvg_bounds[1]:.0f}")
+        self._update_status(f"Loaded SVG with {len(self._textsvg_contours)} paths.")
         if self.auto_preview.get():
             self._open_preview()
 
@@ -541,6 +566,18 @@ class Inkspire:
             maxs = all_pts.max(axis=0)
             shape = (int(maxs[1]) + 1, int(maxs[0]) + 1)
         self.preview.render(self.contours, self.scale.get(), shape)
+        self.preview.focus()
+
+    def _preview_text_svg(self):
+        self._on_text_change()
+        self._open_preview()
+
+    def _browse_svg(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("SVG files", "*.svg"), ("All", "*.*")]
+        )
+        if path:
+            self._load_svg(path)
 
     # ── Drawing ──
 
@@ -567,6 +604,11 @@ class Inkspire:
             "delay_before_start": self.delay_before.get(),
         }
         threading.Thread(target=self.draw_engine.run, args=(self.contours, params), daemon=True).start()
+
+    def _on_ctrl_v(self, event):
+        if isinstance(event.widget, tk.Text):
+            return  # let the text widget handle its own paste
+        self._paste_from_clipboard()
 
     def _update_status(self, text):
         self.root.after(0, lambda: self.lbl_status.config(text=text))
@@ -663,40 +705,36 @@ class Inkspire:
         if not text or not self.font_path:
             return
 
-        self.input_mode = "text"
-        self._update_input_mode_visibility()
-
         max_w = None
-        if self.contour_bounds:
-            max_w = self.contour_bounds[0]
+        if self._textsvg_bounds:
+            max_w = self._textsvg_bounds[0]
 
         try:
-            self.contours = render_text(
+            contours = render_text(
                 text, self.font_path, self.font_size.get(),
                 max_width=max_w)
         except Exception as e:
             self._update_status(f"Text error: {e}")
             return
 
-        if not self.contours:
+        if not contours:
             self._update_status("No glyphs rendered.")
             return
 
-        all_pts = np.vstack(self.contours)
+        all_pts = np.vstack(contours)
         mins = all_pts.min(axis=0)
         maxs = all_pts.max(axis=0)
-        self.contour_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
+        self._textsvg_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
+        self._textsvg_contours = [c - mins for c in contours]
 
-        for i, c in enumerate(self.contours):
-            self.contours[i] = c - mins
+        total_points = sum(len(c) for c in self._textsvg_contours)
+        self.lbl_contours.config(text=f"Contours: {len(self._textsvg_contours)}, Total points: {total_points}")
+        self.lbl_crop.config(text=f"Text: {self._textsvg_bounds[0]:.0f}x{self._textsvg_bounds[1]:.0f}px")
+        self._update_status(f"Text rendered: {len(self._textsvg_contours)} contours, {total_points} points")
 
-        total_points = sum(len(c) for c in self.contours)
-        self.lbl_contours.config(text=f"Contours: {len(self.contours)}, Total points: {total_points}")
-        self.lbl_crop.config(text=f"Text: {self.contour_bounds[0]:.0f}x{self.contour_bounds[1]:.0f}px")
-        self._update_status(f"Text rendered: {len(self.contours)} contours, {total_points} points")
-
-        if self.auto_preview.get():
-            self._open_preview()
+        if self.preview and self.preview.is_open():
+            shape = (int(self._textsvg_bounds[1]), int(self._textsvg_bounds[0]))
+            self.preview.render(self._textsvg_contours, self.scale.get(), shape)
 
     def _pick_canvas(self):
         if not self.contours and self.cropped_image is None:

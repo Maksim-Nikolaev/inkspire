@@ -18,6 +18,10 @@ class PreviewWindow:
     def is_open(self) -> bool:
         return self._win.winfo_exists()
 
+    def focus(self):
+        self._win.lift()
+        self._win.focus_force()
+
     def close(self):
         self._win.destroy()
 

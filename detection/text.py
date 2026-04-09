@@ -93,6 +93,8 @@ def render_text(text: str, font_path: str, font_size: float,
                 positioned[:, 0] = positioned[:, 0] * scale + x_cursor
                 positioned[:, 1] = -positioned[:, 1] * scale + y_offset
                 if len(positioned) >= 2:
+                    if not (positioned[0] == positioned[-1]).all():
+                        positioned = np.vstack([positioned, positioned[:1]])
                     contours.append(positioned)
 
             x_cursor += advance * scale
@@ -204,8 +206,6 @@ def _extract_ttf_glyph(font, glyph_name, tolerance):
         c_flags = flags[start:end + 1]
         pts = _ttf_contour_to_points(c_coords, c_flags, tolerance)
         if len(pts) >= 2:
-            # Close the contour
-            pts = np.vstack([pts, pts[:1]])
             contours.append(pts)
         start = end + 1
 
@@ -300,28 +300,28 @@ def _ttf_contour_to_points(coords, flags, tolerance):
             my = (expanded[0][1] + expanded[-1][1]) / 2
             expanded.insert(0, (mx, my, True))
 
-    points = []
-    i = 0
-    while i < len(expanded):
-        x, y, on = expanded[i]
-        if on:
-            points.append((x, y))
-            i += 1
-        else:
-            # Should not happen if expansion is correct, but handle gracefully
-            points.append((x, y))
-            i += 1
+    # Handle wrap-around between last and first points for closing segment
+    if len(expanded) >= 2 and not expanded[-1][2]:
+        # Last point is off-curve: insert midpoint if first is also off-curve
+        if not expanded[0][2]:
+            mx = (expanded[-1][0] + expanded[0][0]) / 2
+            my = (expanded[-1][1] + expanded[0][1]) / 2
+            expanded.append((mx, my, True))
+        expanded.append(expanded[0])
+    elif len(expanded) >= 2:
+        # Last point is on-curve: check if we need to bridge through off-curve
+        # to first point — append first point to close normally
+        expanded.append(expanded[0])
 
-    # Now rebuild with bezier flattening
+    # Flatten bezier curves
     result = []
     i = 0
     while i < len(expanded):
         ex, ey, eon = expanded[i]
         if eon:
             if i + 2 < len(expanded) and not expanded[i + 1][2]:
-                # On - Off - On/Off sequence: quadratic bezier
                 cx, cy, _ = expanded[i + 1]
-                if i + 2 < len(expanded) and expanded[i + 2][2]:
+                if expanded[i + 2][2]:
                     nx, ny, _ = expanded[i + 2]
                     pts = flatten_quadratic((ex, ey), (cx, cy), (nx, ny), tolerance)
                     result.extend(pts[:-1].tolist())
