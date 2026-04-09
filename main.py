@@ -84,6 +84,7 @@ class Inkspire:
         self._build_gui()
         self.root.bind_all("<F5>", lambda e: self._start_drawing())
         self.root.bind_all("<Escape>", lambda e: self._cancel())
+        self.root.bind_all("<Control-v>", lambda e: self._paste_from_clipboard())
         self._setup_traces()
         self._update_mode_visibility()
         self.root.mainloop()
@@ -151,6 +152,7 @@ class Inkspire:
         self.lbl_file.pack(side="left", **pad)
         ttk.Button(frame_file, text="Re-crop", command=self._recrop).pack(side="right", **pad)
         ttk.Button(frame_file, text="Browse", command=self._browse).pack(side="right", **pad)
+        ttk.Button(frame_file, text="Paste", command=self._paste_from_clipboard).pack(side="right", **pad)
 
         # ── Detection Mode ──
         frame_mode = ttk.LabelFrame(self.root, text="Detection Mode")
@@ -438,6 +440,33 @@ class Inkspire:
 
     def _show_about(self):
         AboutDialog(self.root)
+
+    def _paste_from_clipboard(self):
+        try:
+            from PIL import ImageGrab
+            img = ImageGrab.grabclipboard()
+        except Exception:
+            img = None
+
+        if img is None:
+            try:
+                import subprocess
+                data = subprocess.check_output(
+                    ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
+                    stderr=subprocess.DEVNULL)
+                from PIL import Image
+                import io
+                img = Image.open(io.BytesIO(data))
+            except Exception:
+                self._update_status("No image found in clipboard.")
+                return
+
+        import numpy as np
+        rgb = np.array(img.convert("RGB"))
+        self.gray_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        self.image_path = "(clipboard)"
+        self.lbl_file.config(text="(pasted from clipboard)")
+        self._do_crop()
 
     def _pick_canvas(self):
         if self.cropped_image is None:
