@@ -23,6 +23,7 @@ import sys
 from detection.modes import detect_art_bounds, detect_edges
 from detection.contours import extract_contours, skeletonize
 from detection.suggest import compute_suggested
+from detection.svg import load_svg
 from drawing.engine import DrawEngine
 from ui.about_dialog import AboutDialog
 from ui.crop_dialog import CropDialog
@@ -80,6 +81,9 @@ class Inkspire:
         self.relative_offset = tk.BooleanVar(value=cfg.get("relative_offset", True))
         self.auto_preview = tk.BooleanVar(value=cfg.get("auto_preview", True))
 
+        self.input_mode = "image"  # "image", "svg", or "text"
+        self.contour_bounds = None  # (width, height) for SVG/text contours
+
         self.preview = None
 
         self._build_gui()
@@ -118,6 +122,26 @@ class Inkspire:
         self._set_widget_visible("adaptive_block", mode in ("Adaptive Threshold", "Auto"))
         self._set_widget_visible("adaptive_c", mode in ("Adaptive Threshold", "Auto"))
 
+    def _update_input_mode_visibility(self):
+        show_detection = self.input_mode == "image"
+        for frame in (self._frame_mode, self._frame_det, self._frame_proc, self._frame_cont):
+            frame.pack_forget()
+        self._frame_draw.pack_forget()
+        self.lbl_status.pack_forget()
+        self.lbl_contours.pack_forget()
+        self.lbl_crop.pack_forget()
+        self._frame_btn.pack_forget()
+
+        pad = {"padx": 6, "pady": 3}
+        if show_detection:
+            for frame in (self._frame_mode, self._frame_det, self._frame_proc, self._frame_cont):
+                frame.pack(fill="x", **pad)
+        self._frame_draw.pack(fill="x", **pad)
+        self.lbl_status.pack(**pad)
+        self.lbl_contours.pack(**pad)
+        self.lbl_crop.pack(**pad)
+        self._frame_btn.pack(fill="x", **pad)
+
     # ── Traces for live preview ──
 
     def _setup_traces(self):
@@ -136,7 +160,9 @@ class Inkspire:
         self._schedule_preview_update()
 
     def _schedule_preview_update(self):
-        if not self.auto_preview.get() or self.cropped_image is None:
+        if not self.auto_preview.get():
+            return
+        if self.input_mode == "image" and self.cropped_image is None:
             return
         if self._preview_timer is not None:
             self.root.after_cancel(self._preview_timer)
@@ -144,9 +170,16 @@ class Inkspire:
 
     def _update_live_preview(self):
         self._preview_timer = None
-        self._extract_contours()
+        if self.input_mode == "image":
+            self._extract_contours()
         if self.preview and self.preview.is_open():
-            self.preview.render(self.contours, self.scale.get(), self.cropped_image.shape[:2])
+            if self.input_mode == "image" and self.cropped_image is not None:
+                shape = self.cropped_image.shape[:2]
+            elif self.contour_bounds:
+                shape = (int(self.contour_bounds[1]), int(self.contour_bounds[0]))
+            else:
+                return
+            self.preview.render(self.contours, self.scale.get(), shape)
 
     # ── GUI build ──
 
@@ -163,141 +196,141 @@ class Inkspire:
         ttk.Button(frame_file, text="Paste", command=self._paste_from_clipboard).pack(side="right", **pad)
 
         # ── Detection Mode ──
-        frame_mode = ttk.LabelFrame(self.root, text="Detection Mode")
-        frame_mode.pack(fill="x", **pad)
+        self._frame_mode = ttk.LabelFrame(self.root, text="Detection Mode")
+        self._frame_mode.pack(fill="x", **pad)
 
-        mode_row = ttk.Frame(frame_mode)
+        mode_row = ttk.Frame(self._frame_mode)
         mode_row.pack(fill="x", **pad)
         for m in MODES:
             ttk.Radiobutton(mode_row, text=m, variable=self.detect_mode, value=m).pack(side="left", padx=4)
 
         # ── Detection Parameters ──
-        frame_det = ttk.LabelFrame(self.root, text="Detection Parameters")
-        frame_det.pack(fill="x", **pad)
+        self._frame_det = ttk.LabelFrame(self.root, text="Detection Parameters")
+        self._frame_det.pack(fill="x", **pad)
 
         row = 0
         self._widgets["threshold"] = LinkedSliderEntry(
-            frame_det, row, "Threshold (1-254):", self.threshold, "threshold",
+            self._frame_det, row, "Threshold (1-254):", self.threshold, "threshold",
             is_int=True, from_=1, to=254, step=1, pad=pad,
             tooltip="Brightness cutoff (0=black, 255=white). Pixels darker than this become edges. Lower = more detected. Otsu auto-picks the optimal split.")
         row += 1
         self._widgets["canny_lo"] = LinkedSliderEntry(
-            frame_det, row, "Canny low:", self.canny_lo, "canny_lo",
+            self._frame_det, row, "Canny low:", self.canny_lo, "canny_lo",
             is_int=True, from_=1, to=300, step=1, pad=pad,
             tooltip="Minimum gradient strength to start an edge. Lower = more edges, more noise. Typical: 30-100.")
         row += 1
         self._widgets["canny_hi"] = LinkedSliderEntry(
-            frame_det, row, "Canny high:", self.canny_hi, "canny_hi",
+            self._frame_det, row, "Canny high:", self.canny_hi, "canny_hi",
             is_int=True, from_=1, to=500, step=1, pad=pad,
             tooltip="Minimum gradient strength to confirm an edge. Lower = more connected edges. Typical: 100-250. Keep > Canny low.")
         row += 1
         self._widgets["adaptive_block"] = LinkedSliderEntry(
-            frame_det, row, "Adaptive block size:", self.adaptive_block, "adaptive_block",
+            self._frame_det, row, "Adaptive block size:", self.adaptive_block, "adaptive_block",
             is_int=True, from_=3, to=99, step=2, pad=pad,
             tooltip="Size of the local neighborhood for threshold calculation. Must be odd. Larger = smoother, less sensitive to small features. Typical: 7-21.")
         row += 1
         self._widgets["adaptive_c"] = LinkedSliderEntry(
-            frame_det, row, "Adaptive C:", self.adaptive_c, "adaptive_c",
+            self._frame_det, row, "Adaptive C:", self.adaptive_c, "adaptive_c",
             is_int=True, from_=-20, to=20, step=1, pad=pad,
             tooltip="Constant subtracted from the local mean. Higher = fewer edges detected. Typical: 0-10.")
 
-        frame_det.columnconfigure(1, weight=1)
+        self._frame_det.columnconfigure(1, weight=1)
 
         # ── Pre/Post Processing ──
-        frame_proc = ttk.LabelFrame(self.root, text="Pre/Post Processing")
-        frame_proc.pack(fill="x", **pad)
+        self._frame_proc = ttk.LabelFrame(self.root, text="Pre/Post Processing")
+        self._frame_proc.pack(fill="x", **pad)
 
         row = 0
         self._widgets["blur_radius"] = LinkedSliderEntry(
-            frame_proc, row, "Blur radius (halftone):", self.blur_radius, "blur_radius",
+            self._frame_proc, row, "Blur radius (halftone):", self.blur_radius, "blur_radius",
             is_int=True, from_=0, to=20, step=1, pad=pad,
             tooltip="Gaussian blur kernel radius applied before detection. Removes halftone dots and noise. 0 = off. For halftones try 2-5.")
         row += 1
         self._widgets["morph_iter"] = LinkedSliderEntry(
-            frame_proc, row, "Morph cleanup (iter):", self.morph_iter, "morph_iter",
+            self._frame_proc, row, "Morph cleanup (iter):", self.morph_iter, "morph_iter",
             is_int=True, from_=0, to=10, step=1, pad=pad,
             tooltip="Morphological operations to clean up the edge mask. Close fills small gaps, open removes specks. 0 = off. 1-2 = light cleanup.")
 
-        frame_proc.columnconfigure(1, weight=1)
+        self._frame_proc.columnconfigure(1, weight=1)
 
         # ── Contour Settings ──
-        frame_cont = ttk.LabelFrame(self.root, text="Contour Settings")
-        frame_cont.pack(fill="x", **pad)
+        self._frame_cont = ttk.LabelFrame(self.root, text="Contour Settings")
+        self._frame_cont.pack(fill="x", **pad)
 
         row = 0
         self._widgets["min_contour_len"] = LinkedSliderEntry(
-            frame_cont, row, "Min contour length:", self.min_contour_len, "min_contour_len",
+            self._frame_cont, row, "Min contour length:", self.min_contour_len, "min_contour_len",
             is_int=True, from_=1, to=500, step=1, pad=pad,
             tooltip="Contours shorter than this (in points) are discarded. Filters out noise fragments. Higher = cleaner but may lose small details.")
         row += 1
         self._widgets["simplify"] = LinkedSliderEntry(
-            frame_cont, row, "Simplify (epsilon):", self.simplify, "simplify",
+            self._frame_cont, row, "Simplify (epsilon):", self.simplify, "simplify",
             is_int=False, from_=0.1, to=10.0, step=0.1, pad=pad,
             tooltip="How aggressively contour paths are simplified. Higher = fewer points, faster drawing, but corners get rounded. 0.5 = detailed, 2.0 = aggressive.")
         row += 1
-        skel_cb = ttk.Checkbutton(frame_cont, text="Skeletonize (thin lines to 1px)",
+        skel_cb = ttk.Checkbutton(self._frame_cont, text="Skeletonize (thin lines to 1px)",
                                   variable=self.use_skeleton)
         skel_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
         Tooltip(skel_cb, "Thin all detected regions to 1px centerlines. Useful when source has thick brush strokes. Off by default.")
         row += 1
-        self.btn_suggested = ttk.Button(frame_cont, text="Reset to Suggested",
+        self.btn_suggested = ttk.Button(self._frame_cont, text="Reset to Suggested",
                                         command=self._apply_suggested, state="disabled")
         self.btn_suggested.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
 
-        frame_cont.columnconfigure(1, weight=1)
+        self._frame_cont.columnconfigure(1, weight=1)
 
         # ── Drawing Settings ──
-        frame_draw = ttk.LabelFrame(self.root, text="Drawing Settings")
-        frame_draw.pack(fill="x", **pad)
+        self._frame_draw = ttk.LabelFrame(self.root, text="Drawing Settings")
+        self._frame_draw.pack(fill="x", **pad)
 
         row = 0
         self._widgets["scale"] = LinkedSliderEntry(
-            frame_draw, row, "Scale:", self.scale, "scale",
+            self._frame_draw, row, "Scale:", self.scale, "scale",
             is_int=False, from_=0.10, to=10.0, step=0.01, pad=pad,
             tooltip="Multiply the image dimensions by this factor for drawing. 1.0 = original size. 2.0 = double size.")
         row += 1
-        ttk.Label(frame_draw, text="Offset X (px):").grid(row=row, column=0, sticky="w", **pad)
-        ox_entry = ttk.Entry(frame_draw, textvariable=self.offset_x, width=8)
+        ttk.Label(self._frame_draw, text="Offset X (px):").grid(row=row, column=0, sticky="w", **pad)
+        ox_entry = ttk.Entry(self._frame_draw, textvariable=self.offset_x, width=8)
         ox_entry.grid(row=row, column=1, sticky="w", **pad)
         Tooltip(ox_entry, "Absolute screen pixel X for the top-left corner of the drawn image.")
 
         row += 1
-        ttk.Label(frame_draw, text="Offset Y (px):").grid(row=row, column=0, sticky="w", **pad)
-        oy_entry = ttk.Entry(frame_draw, textvariable=self.offset_y, width=8)
+        ttk.Label(self._frame_draw, text="Offset Y (px):").grid(row=row, column=0, sticky="w", **pad)
+        oy_entry = ttk.Entry(self._frame_draw, textvariable=self.offset_y, width=8)
         oy_entry.grid(row=row, column=1, sticky="w", **pad)
         Tooltip(oy_entry, "Absolute screen pixel Y for the top-left corner of the drawn image.")
 
         row += 1
-        rel_cb = ttk.Checkbutton(frame_draw, text="Relative to mouse (bottom-left corner)",
+        rel_cb = ttk.Checkbutton(self._frame_draw, text="Relative to mouse (bottom-left corner)",
                                  variable=self.relative_offset)
         rel_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
         Tooltip(rel_cb, "When enabled, ignores Offset X/Y. Your mouse position at draw start becomes the bottom-left corner of the image.")
 
         row += 1
         self._widgets["speed"] = LinkedSliderEntry(
-            frame_draw, row, "Speed (s/point):", self.speed, "speed",
+            self._frame_draw, row, "Speed (s/point):", self.speed, "speed",
             is_int=False, from_=0.0, to=0.1, step=0.001, pad=pad,
             tooltip="Delay in seconds between each point movement. Lower = faster. 0 = maximum speed. If the target app drops strokes, increase this.")
 
         row += 1
-        ttk.Label(frame_draw, text="Mouse button:").grid(row=row, column=0, sticky="w", **pad)
-        btn_frame = ttk.Frame(frame_draw)
+        ttk.Label(self._frame_draw, text="Mouse button:").grid(row=row, column=0, sticky="w", **pad)
+        btn_frame = ttk.Frame(self._frame_draw)
         btn_frame.grid(row=row, column=1, sticky="w", **pad)
         ttk.Radiobutton(btn_frame, text="Left", variable=self.mouse_button, value="left").pack(side="left")
         ttk.Radiobutton(btn_frame, text="Right", variable=self.mouse_button, value="right").pack(side="left")
         Tooltip(btn_frame, "Which button to hold while drawing. Some apps use left, some use right for drawing tools.")
 
         row += 1
-        ttk.Label(frame_draw, text="Delay before start (s):").grid(row=row, column=0, sticky="w", **pad)
-        delay_entry = ttk.Entry(frame_draw, textvariable=self.delay_before, width=8)
+        ttk.Label(self._frame_draw, text="Delay before start (s):").grid(row=row, column=0, sticky="w", **pad)
+        delay_entry = ttk.Entry(self._frame_draw, textvariable=self.delay_before, width=8)
         delay_entry.grid(row=row, column=1, sticky="w", **pad)
         Tooltip(delay_entry, "Seconds of countdown before drawing begins. Use this time to switch to your target application and position your mouse.")
 
         row += 1
-        ttk.Button(frame_draw, text="Set Canvas", command=self._pick_canvas).grid(
+        ttk.Button(self._frame_draw, text="Set Canvas", command=self._pick_canvas).grid(
             row=row, column=0, columnspan=3, sticky="w", **pad)
 
-        frame_draw.columnconfigure(1, weight=1)
+        self._frame_draw.columnconfigure(1, weight=1)
 
         # ── Status ──
         self.lbl_status = ttk.Label(self.root, text="Load an image to begin.")
@@ -308,28 +341,73 @@ class Inkspire:
         self.lbl_crop.pack(**pad)
 
         # ── Buttons ──
-        frame_btn = ttk.Frame(self.root)
-        frame_btn.pack(fill="x", **pad)
-        ttk.Button(frame_btn, text="Preview", command=self._open_preview).pack(side="left", **pad)
-        ttk.Checkbutton(frame_btn, text="Live", variable=self.auto_preview).pack(side="left", **pad)
-        ttk.Button(frame_btn, text="Start Drawing", command=self._start_drawing).pack(side="left", **pad)
-        ttk.Button(frame_btn, text="About", command=self._show_about).pack(side="left", **pad)
-        ttk.Button(frame_btn, text="Quit", command=self._quit).pack(side="right", **pad)
+        self._frame_btn = ttk.Frame(self.root)
+        self._frame_btn.pack(fill="x", **pad)
+        ttk.Button(self._frame_btn, text="Preview", command=self._open_preview).pack(side="left", **pad)
+        ttk.Checkbutton(self._frame_btn, text="Live", variable=self.auto_preview).pack(side="left", **pad)
+        ttk.Button(self._frame_btn, text="Start Drawing", command=self._start_drawing).pack(side="left", **pad)
+        ttk.Button(self._frame_btn, text="About", command=self._show_about).pack(side="left", **pad)
+        ttk.Button(self._frame_btn, text="Quit", command=self._quit).pack(side="right", **pad)
 
     # ── Image Loading, Crop, Auto-propose ──
 
     def _browse(self):
         path = filedialog.askopenfilename(
-            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp"), ("All", "*.*")]
+            filetypes=[
+                ("All supported", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp *.svg"),
+                ("Images", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp"),
+                ("SVG", "*.svg"),
+                ("All", "*.*"),
+            ]
         )
-        if path:
-            self.image_path = path
-            self.gray_image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-            if self.gray_image is None:
-                self.lbl_status.config(text="Error: could not read image.")
-                return
-            self.lbl_file.config(text=path.split("/")[-1])
-            self._do_crop()
+        if not path:
+            return
+        if path.lower().endswith(".svg"):
+            self._load_svg(path)
+        else:
+            self._load_image(path)
+
+    def _load_image(self, path):
+        self.image_path = path
+        self.gray_image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if self.gray_image is None:
+            self.lbl_status.config(text="Error: could not read image.")
+            return
+        self.lbl_file.config(text=path.split("/")[-1])
+        self.input_mode = "image"
+        self.contour_bounds = None
+        self._update_input_mode_visibility()
+        self._do_crop()
+
+    def _load_svg(self, path):
+        try:
+            self.contours = load_svg(path)
+        except Exception as e:
+            self.lbl_status.config(text=f"SVG error: {e}")
+            return
+        if not self.contours:
+            self.lbl_status.config(text="No paths found in SVG.")
+            return
+        self.image_path = path
+        self.gray_image = None
+        self.cropped_image = None
+        self.input_mode = "svg"
+
+        all_pts = np.vstack(self.contours)
+        mins = all_pts.min(axis=0)
+        maxs = all_pts.max(axis=0)
+        self.contour_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
+        for i, c in enumerate(self.contours):
+            self.contours[i] = c - mins
+
+        total_points = sum(len(c) for c in self.contours)
+        self.lbl_file.config(text=path.split("/")[-1])
+        self.lbl_contours.config(text=f"Contours: {len(self.contours)}, Total points: {total_points}")
+        self.lbl_crop.config(text=f"SVG: {self.contour_bounds[0]:.0f}x{self.contour_bounds[1]:.0f}")
+        self._update_input_mode_visibility()
+        self._update_status(f"Loaded SVG with {len(self.contours)} paths.")
+        if self.auto_preview.get():
+            self._open_preview()
 
     def _recrop(self):
         if self.gray_image is None:
@@ -413,13 +491,22 @@ class Inkspire:
     # ── Preview ──
 
     def _open_preview(self):
-        self._extract_contours()
+        if self.input_mode == "image":
+            self._extract_contours()
         if not self.contours:
             self.lbl_status.config(text="No contours found. Adjust parameters.")
             return
         if self.preview is None or not self.preview.is_open():
             self.preview = PreviewWindow(self.root)
-        self.preview.render(self.contours, self.scale.get(), self.cropped_image.shape[:2])
+        if self.input_mode == "image" and self.cropped_image is not None:
+            shape = self.cropped_image.shape[:2]
+        elif self.contour_bounds:
+            shape = (int(self.contour_bounds[1]), int(self.contour_bounds[0]))
+        else:
+            all_pts = np.vstack(self.contours)
+            maxs = all_pts.max(axis=0)
+            shape = (int(maxs[1]) + 1, int(maxs[0]) + 1)
+        self.preview.render(self.contours, self.scale.get(), shape)
 
     # ── Drawing ──
 
@@ -431,7 +518,7 @@ class Inkspire:
         self.root.after(100, self._poll_start_key)
 
     def _start_drawing(self):
-        if not self.contours:
+        if not self.contours and self.input_mode == "image":
             self._extract_contours()
         if not self.contours:
             self.lbl_status.config(text="No contours to draw.")
@@ -512,8 +599,8 @@ class Inkspire:
         self._do_crop()
 
     def _pick_canvas(self):
-        if self.cropped_image is None:
-            self._update_status("Load an image first.")
+        if not self.contours and self.cropped_image is None:
+            self._update_status("Load an image or SVG first.")
             return
         CanvasPicker(self.root, self._apply_canvas_target)
 
@@ -521,7 +608,12 @@ class Inkspire:
         self.offset_x.set(x)
         self.offset_y.set(y)
         self.relative_offset.set(False)
-        img_h, img_w = self.cropped_image.shape[:2]
+        if self.cropped_image is not None:
+            img_h, img_w = self.cropped_image.shape[:2]
+        elif self.contour_bounds:
+            img_w, img_h = self.contour_bounds
+        else:
+            return
         scale_x = width / img_w
         scale_y = height / img_h
         self.scale.set(round(min(scale_x, scale_y), 3))
