@@ -2,7 +2,7 @@
 
 import time
 import numpy as np
-from drawing.mouse_x11 import mouse_move, mouse_down, mouse_up, get_mouse_pos, is_escape_pressed
+from drawing.mouse import mouse_move, mouse_down, mouse_up, get_mouse_pos
 
 __all__ = ["DrawEngine"]
 
@@ -11,7 +11,11 @@ class DrawEngine:
     def __init__(self, on_status, cancel_check=None):
         self.on_status = on_status
         self.cancel_flag = False
-        self._cancel_check = cancel_check or is_escape_pressed
+        if cancel_check is None:
+            from core.keybinds import resolve_keycode, is_key_pressed
+            esc_code = resolve_keycode("Escape")
+            cancel_check = (lambda: is_key_pressed(esc_code)) if esc_code else (lambda: False)
+        self._cancel_check = cancel_check
         self._was_pressed = False
 
     def run(self, contours, params):

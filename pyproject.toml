@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inkspire"
+version = "0.3.0"
+description = "Trace line art by moving the mouse along extracted contours"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+    "fonttools>=4.40",
+]
+
+[project.scripts]
+inkspire = "main:main"
+
+[project.gui-scripts]
+inkspire-gui = "main:main"

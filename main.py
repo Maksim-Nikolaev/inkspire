@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
 Inkspire – traces line art by moving the mouse along extracted contours.
-Uses ctypes X11 calls for fast, jitter-free mouse control.
 
 Supports: B/W line art, colored images, halftones via multiple detection modes.
+Platforms: Linux (X11) and Windows.
 
 Usage: python3 main.py
-
-Requires: opencv-python, numpy, Pillow
-Install:  sudo pip install opencv-python numpy Pillow --break-system-packages
-System:   sudo apt install python3-tk python3-pil.imagetk
 """
 
 import cv2
@@ -34,8 +30,8 @@ from ui.widgets import LinkedSliderEntry
 from ui.preview import PreviewWindow
 from ui.canvas_picker import CanvasPicker
 from core.config import load_config, save_config
-from core.keybinds import resolve_keycode
-from drawing.mouse_x11 import is_key_pressed
+from core.keybinds import resolve_keycode, is_key_pressed
+from core.clipboard import get_clipboard_image
 
 MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
 
@@ -620,52 +616,10 @@ class Inkspire:
         AboutDialog(self.root)
 
     def _paste_from_clipboard(self):
-        import subprocess
-        import io
-
-        img = None
-
-        # Try PIL ImageGrab first (works if xclip or wl-paste is installed)
-        try:
-            from PIL import ImageGrab
-            img = ImageGrab.grabclipboard()
-        except Exception:
-            pass
-
-        # Fallback: xclip
-        if img is None:
-            for mime in ["image/png", "image/bmp", "image/jpeg"]:
-                try:
-                    data = subprocess.check_output(
-                        ["xclip", "-selection", "clipboard", "-t", mime, "-o"],
-                        stderr=subprocess.DEVNULL)
-                    img = Image.open(io.BytesIO(data))
-                    break
-                except Exception:
-                    continue
-
-        # Fallback: xsel
-        if img is None:
-            try:
-                data = subprocess.check_output(
-                    ["xsel", "--clipboard", "--output"],
-                    stderr=subprocess.DEVNULL)
-                img = Image.open(io.BytesIO(data))
-            except Exception:
-                pass
-
-        # Fallback: wl-paste (Wayland)
-        if img is None:
-            try:
-                data = subprocess.check_output(
-                    ["wl-paste", "--type", "image/png"],
-                    stderr=subprocess.DEVNULL)
-                img = Image.open(io.BytesIO(data))
-            except Exception:
-                pass
+        img = get_clipboard_image()
 
         if img is None:
-            self._update_status("No image in clipboard. Install xclip: sudo apt install xclip")
+            self._update_status("No image in clipboard.")
             return
 
         rgb = np.array(img.convert("RGB"))
@@ -773,5 +727,9 @@ class Inkspire:
         sys.exit(0)
 
 
-if __name__ == "__main__":
+def main():
     Inkspire()
+
+
+if __name__ == "__main__":
+    main()
