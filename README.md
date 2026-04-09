@@ -31,12 +31,12 @@ input.
 
 ## Usage
 
-Because the script warps the pointer and synthesizes mouse button events, it
-typically needs to run with elevated permissions:
-
 ```bash
-sudo python3 main.py
+python3 main.py
 ```
+
+> **Note:** On some X11 configurations, mouse synthesis may require running
+> with `sudo`. Try without first.
 
 1. Load an image via the GUI.
 2. Pick a detection mode appropriate for the artwork.
