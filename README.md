@@ -5,6 +5,15 @@ images, SVGs, or text. It drives drawing applications that accept synthetic
 pointer input, using native `ctypes` calls for low-latency mouse control on
 both Linux (X11) and Windows.
 
+![Inkspire preview](assets/gif_preview/preview.gif)
+
+## Examples
+
+| Source | Result |
+|--------|--------|
+| ![corgi source](assets/source/corgi.png) | ![corgi drawing](assets/examples/corgi.jpg) |
+| ![github source](assets/source/github.jpg) | ![github drawing](assets/examples/github.jpg) |
+
 ## Features
 
 - **Multiple detection modes** — threshold, Canny edge, adaptive threshold,
