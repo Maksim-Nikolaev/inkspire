@@ -6,6 +6,7 @@ __all__ = ["resolve_keycode", "is_key_pressed"]
 
 try:
     _xlib = ctypes.cdll.LoadLibrary("libX11.so.6")
+    _xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
     _xlib.XOpenDisplay.restype = ctypes.c_void_p
     _xlib.XStringToKeysym.argtypes = [ctypes.c_char_p]
     _xlib.XStringToKeysym.restype = ctypes.c_ulong

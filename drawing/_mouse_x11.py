@@ -8,8 +8,22 @@ __all__ = ["mouse_move", "mouse_down", "mouse_up", "get_mouse_pos"]
 _xlib = ctypes.cdll.LoadLibrary("libX11.so.6")
 _xtst = ctypes.cdll.LoadLibrary("libXtst.so.6")
 
+_xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
 _xlib.XOpenDisplay.restype = ctypes.c_void_p
+_xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
 _xlib.XDefaultRootWindow.restype = ctypes.c_ulong
+_xlib.XFlush.argtypes = [ctypes.c_void_p]
+_xlib.XQueryPointer.argtypes = [
+    ctypes.c_void_p, ctypes.c_ulong,
+    ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+    ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+    ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+    ctypes.POINTER(ctypes.c_uint),
+]
+_xtst.XTestFakeMotionEvent.argtypes = [
+    ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong,
+]
+_xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
 
 _display = _xlib.XOpenDisplay(None)
 if not _display:
@@ -19,7 +33,7 @@ _root = _xlib.XDefaultRootWindow(_display)
 
 
 def mouse_move(x, y):
-    _xlib.XWarpPointer(_display, 0, _root, 0, 0, 0, 0, int(x), int(y))
+    _xtst.XTestFakeMotionEvent(_display, -1, int(x), int(y), 0)
     _xlib.XFlush(_display)
 
 
