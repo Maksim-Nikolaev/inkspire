@@ -76,7 +76,8 @@ SIDEBAR_WIDTH = 384
 
 class Inkspire:
     def __init__(self, self_test=False):
-        self.root = ctk.CTk()
+        # The class becomes WM_CLASS "Inkspire" on Linux, which the installed .desktop file's StartupWMClass matches.
+        self.root = ctk.CTk(className="inkspire")
         theme.setup(self.root)
         theme.apply_window_icon(self.root)
         self.root.title("Inkspire")

@@ -30,23 +30,45 @@ Inkspire traces line art by moving the mouse along contours extracted from image
 
 ## Install
 
+Linux (x86_64) and macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Maksim-Nikolaev/inkspire/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/Maksim-Nikolaev/inkspire/main/install.ps1 | iex
+```
+
+The scripts install the latest release for the current user without admin rights, and running them again updates Inkspire:
+
+- **Linux:** `~/.local/bin/inkspire`, plus an app menu entry and icon.
+- **macOS:** `/Applications/Inkspire.app`, or `~/Applications` when `/Applications` is not writable. An app installed this way carries no quarantine flag, so the Gatekeeper step below does not apply.
+- **Windows:** `%LOCALAPPDATA%\Programs\Inkspire\inkspire.exe`, plus a Start menu shortcut.
+
+To uninstall, run `curl -fsSL https://raw.githubusercontent.com/Maksim-Nikolaev/inkspire/main/install.sh | sh -s -- --uninstall`, or on Windows `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Maksim-Nikolaev/inkspire/main/install.ps1))) -Uninstall`. Settings in `~/.config/inkspire` are kept. Set `INKSPIRE_VERSION=v0.6.0` (PowerShell: `$env:INKSPIRE_VERSION = "v0.6.0"`) to install a specific release.
+
+### Manual download
+
 Download the build for your platform from [Releases](https://github.com/Maksim-Nikolaev/inkspire/releases):
 
 | Platform | File |
 |----------|------|
-| Linux (x86_64) | `inkspire.tar.gz` – extract and run `./inkspire` |
+| Linux (x86_64, glibc 2.35+) | `inkspire.tar.gz` – extract and run `./inkspire` |
 | Windows (x86_64) | `inkspire.exe` |
 | macOS (Apple Silicon, macOS 13+) | `inkspire-macos-arm64.dmg` |
 | macOS (Intel, macOS 14+) | `inkspire-macos-x86_64.dmg` |
 
 ### macOS first launch
 
-The macOS builds are not notarized yet, so Gatekeeper stops the first launch:
+The macOS builds are not notarized yet, so Gatekeeper stops the first launch of a DMG downloaded in the browser:
 
 1. Open the DMG and drag Inkspire to Applications.
 2. Open Inkspire. When macOS says it cannot verify the developer, go to System Settings → Privacy & Security and click **Open Anyway** (on older macOS versions, right-click the app and choose Open). Alternatively run `xattr -dr com.apple.quarantine /Applications/Inkspire.app`.
 3. On first launch Inkspire explains and requests **Accessibility** access, which macOS requires before an app may move the pointer and click. Click **Open System Settings**, switch Inkspire on under Privacy & Security → Accessibility, and return to Inkspire. The prompt closes by itself once access is granted.
-4. Builds without a Developer ID signature get a new code signature with every update, so macOS may forget the permission after updating. If drawing does nothing, remove Inkspire from the Accessibility list with − and add it again.
+4. Builds without a Developer ID signature get a new code signature with every update, so macOS may forget the permission after updating. The install script resets the old entry when it updates Inkspire, so the prompt appears again. Otherwise, if drawing does nothing, remove Inkspire from the Accessibility list with − and add it again.
 
 Mac keyboards send media keys from the top row unless you hold fn, so press **fn+F5** to start, or pick another key under Keybinds. The global start and cancel keys are read with `CGEventSourceKeyState`; whether that needs extra permission while another app has focus is untested, so use the on-screen buttons if the keys do not react.
 
@@ -89,9 +111,33 @@ Inkspire runs under Wayland through Xwayland and injects input via the XTest ext
 
 ## Building
 
-`./build.sh` builds with PyInstaller into `builds/`: a single-file binary packed as `inkspire-linux.tar.gz` on Linux, or a DMG on macOS.
+`./build.sh` builds with PyInstaller on the machine it runs on, starts the result with `--self-test`, and writes the release file to `builds/` under the name the install scripts download:
 
-The [release workflow](.github/workflows/release.yml) builds Linux, Windows, and macOS (arm64 and x86_64) on every pull request and manual run, starts each build with `--self-test`, and publishes a GitHub Release with all four files when a `v*` tag is pushed. macOS Developer ID signing and notarization switch on once these repository secrets exist: `MACOS_CERTIFICATE` (base64 `.p12`), `MACOS_CERTIFICATE_PASSWORD`, `MACOS_CODESIGN_IDENTITY`, `NOTARY_KEY` (base64 App Store Connect `.p8`), `NOTARY_KEY_ID`, and `NOTARY_ISSUER_ID`.
+| Platform | Command | Output |
+|----------|---------|--------|
+| Linux | `./build.sh --docker` | `builds/inkspire.tar.gz` |
+| Windows | `./build.sh` in Git Bash | `builds/inkspire.exe` |
+| macOS (Apple Silicon) | `./build.sh` | `builds/inkspire-macos-arm64.dmg` |
+| macOS (Intel) | `./build.sh` | `builds/inkspire-macos-x86_64.dmg` |
+
+PyInstaller does not cross-compile, so each file has to be built on its own platform. On Linux, `--docker` builds inside Ubuntu 22.04 so the binary also runs on distributions with glibc 2.35; a plain `./build.sh` links against the build machine's glibc and may not start on older systems. Windows and macOS builds need Python 3.13, because the python.org 3.14 installers ship Tk 9, which CustomTkinter is not tested against. On Windows `py -3.13` is the default; elsewhere set `PYTHON=python3.13` if `python3` is a different version. macOS builds are ad-hoc signed unless `INKSPIRE_CODESIGN_IDENTITY` names a Developer ID.
+
+### Releasing
+
+Releases are built locally and uploaded by hand. Push `main` first, since the install scripts are served from it:
+
+```bash
+git push origin main
+git tag v0.6.0 && git push origin v0.6.0
+gh release create v0.6.0 --draft --verify-tag --title v0.6.0 --generate-notes builds/inkspire.tar.gz
+gh release upload v0.6.0 builds/inkspire.exe              # on the Windows machine
+gh release upload v0.6.0 builds/inkspire-macos-arm64.dmg  # on each Mac
+gh release edit v0.6.0 --draft=false
+```
+
+Files can also be dragged into the draft on the release page. The install scripts download from the latest published release, so they keep serving the previous version until the draft is published. Keep the four file names unchanged, or the scripts stop finding them.
+
+The [build workflow](.github/workflows/release.yml) runs only when started from Actions → Build → Run workflow. It builds all four files, starts each with `--self-test`, and keeps them as run artifacts. macOS Developer ID signing and notarization switch on there once these repository secrets exist: `MACOS_CERTIFICATE` (base64 `.p12`), `MACOS_CERTIFICATE_PASSWORD`, `MACOS_CODESIGN_IDENTITY`, `NOTARY_KEY` (base64 App Store Connect `.p8`), `NOTARY_KEY_ID`, and `NOTARY_ISSUER_ID`.
 
 ## License
 
