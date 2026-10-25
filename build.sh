@@ -6,28 +6,31 @@ OUT="builds"
 
 echo "=== Inkspire build ==="
 
-# Create/reuse a build venv
 if [ ! -d "$VENV" ]; then
     echo "Creating build venv..."
     python3 -m venv "$VENV"
 fi
 source "$VENV/bin/activate"
 
-# Install deps
-pip install --quiet "opencv-python" "numpy" "Pillow" "fonttools" "pyinstaller"
+pip install --quiet -r requirements.txt "pyinstaller>=6.0"
 
-# Clean previous build
 rm -rf build/ dist/
 
-# Build single-file executable
-pyinstaller inkspire.spec
+pyinstaller --noconfirm inkspire.spec
 
-# Package
 mkdir -p "$OUT"
-chmod +x dist/inkspire
-tar -czf "$OUT/inkspire-linux.tar.gz" -C dist inkspire
+if [ "$(uname)" = "Darwin" ]; then
+    ARTIFACT="$OUT/inkspire-macos-$(uname -m).dmg"
+    packaging/make_dmg.sh dist/Inkspire.app "$ARTIFACT"
+    HINT="Open the .dmg and drag Inkspire to Applications"
+else
+    ARTIFACT="$OUT/inkspire-linux.tar.gz"
+    chmod +x dist/inkspire
+    tar -czf "$ARTIFACT" -C dist inkspire
+    HINT="Extract and run: tar xzf inkspire-linux.tar.gz && ./inkspire"
+fi
 
-SIZE=$(du -h "$OUT/inkspire-linux.tar.gz" | cut -f1)
+SIZE=$(du -h "$ARTIFACT" | cut -f1)
 echo ""
-echo "=== Done: $OUT/inkspire-linux.tar.gz ($SIZE) ==="
-echo "Extract and run: tar xzf inkspire-linux.tar.gz && ./inkspire"
+echo "=== Done: $ARTIFACT ($SIZE) ==="
+echo "$HINT"
