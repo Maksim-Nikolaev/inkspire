@@ -3,19 +3,16 @@
 import os
 import sys
 
-__all__ = ["system_env"]
+__all__ = ["restore_system_env"]
 
 
-def system_env() -> dict:
-    """Copy of os.environ without the bundle's library path, so system binaries load system libraries."""
-    env = dict(os.environ)
-
+def restore_system_env():
+    """Drop the bundle's library path from os.environ, so every system binary we launch loads system libraries."""
+    # The dynamic loader reads these only at process start, so the running process keeps resolving bundled libraries.
     for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
-        original = env.pop(f"{var}_ORIG", None)
+        original = os.environ.pop(f"{var}_ORIG", None)
 
         if original is not None:
-            env[var] = original
+            os.environ[var] = original
         elif getattr(sys, "frozen", False):
-            env.pop(var, None)
-
-    return env
+            os.environ.pop(var, None)

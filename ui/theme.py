@@ -12,7 +12,6 @@ import tkinter.font as tkfont
 from pathlib import Path
 
 from core.config import CONFIG_DIR
-from core.proc import system_env
 
 __all__ = [
     "ctk", "setup", "is_dark", "pick", "font", "mono_font", "apply_window_icon",
@@ -104,7 +103,7 @@ def _linux_prefers_dark() -> bool:
              "--object-path", "/org/freedesktop/portal/desktop",
              "--method", "org.freedesktop.portal.Settings.ReadOne",
              "org.freedesktop.appearance", "color-scheme"],
-            capture_output=True, text=True, timeout=2, env=system_env(),
+            capture_output=True, text=True, timeout=2,
         ).stdout
         match = re.search(r"uint32 (\d)", out)
 
@@ -116,7 +115,7 @@ def _linux_prefers_dark() -> bool:
     try:
         out = subprocess.run(
             ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
-            capture_output=True, text=True, timeout=2, env=system_env(),
+            capture_output=True, text=True, timeout=2,
         ).stdout
 
         if "dark" in out:
@@ -124,7 +123,7 @@ def _linux_prefers_dark() -> bool:
 
         out = subprocess.run(
             ["gsettings", "get", "org.gnome.desktop.interface", "gtk-theme"],
-            capture_output=True, text=True, timeout=2, env=system_env(),
+            capture_output=True, text=True, timeout=2,
         ).stdout
 
         return "-dark" in out.lower()
@@ -155,7 +154,7 @@ def watch_appearance(root: tk.Misc):
             proc = subprocess.Popen(
                 ["gdbus", "monitor", "--session", "--dest", "org.freedesktop.portal.Desktop",
                  "--object-path", "/org/freedesktop/portal/desktop"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=system_env(),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             )
         except OSError:
             return

@@ -37,6 +37,7 @@ class CanvasPicker:
             self.canvas.create_image(0, 0, anchor="nw", image=self._bg_img)
             self._spot_img = None
             self._spot = self.canvas.create_image(0, 0, anchor="nw")
+            self._spot_job = None
         else:
             # No screenshot (e.g. Wayland): fall back to a see-through tint where the window manager allows it.
             self._base = None
@@ -105,11 +106,8 @@ class CanvasPicker:
         self.canvas.coords(self._rect, left, top, right, bottom)
         self.canvas.itemconfigure(self._rect, state="normal")
 
-        if self._base is not None and right - left > 1 and bottom - top > 1:
-            self._spot_img = ImageTk.PhotoImage(self._base.crop((left, top, right, bottom)), master=self.canvas)
-            self.canvas.itemconfigure(self._spot, image=self._spot_img)
-            self.canvas.coords(self._spot, left, top)
-            self.canvas.tag_raise(self._rect)
+        if self._base is not None and right - left > 1 and bottom - top > 1 and not self._spot_job:
+            self._spot_job = self.canvas.after_idle(self._paint_spot)
 
         self.canvas.itemconfigure(self._size_text, text=f"{right - left} × {bottom - top}", state="normal")
         self.canvas.coords(self._size_text, left + 8, bottom + 10)
@@ -119,12 +117,28 @@ class CanvasPicker:
         self.canvas.tag_raise(self._size_bg)
         self.canvas.tag_raise(self._size_text)
 
+    def _paint_spot(self):
+        self._spot_job = None
+
+        if not self.canvas.winfo_exists():
+            return
+
+        left, top, right, bottom = (int(v) for v in self.canvas.coords(self._rect))
+
+        self._spot_img = ImageTk.PhotoImage(self._base.crop((left, top, right, bottom)), master=self.canvas)
+        self.canvas.itemconfigure(self._spot, image=self._spot_img)
+        self.canvas.coords(self._spot, left, top)
+        self.canvas.tag_raise(self._rect)
+        self.canvas.tag_raise(self._size_bg)
+        self.canvas.tag_raise(self._size_text)
+
     def _on_release(self, event):
         if self.first_click is None:
             return
 
         x1, y1 = self.first_click
         x2, y2 = event.x_root, event.y_root
+
         self.overlay.destroy()
 
         left, top = min(x1, x2), min(y1, y2)

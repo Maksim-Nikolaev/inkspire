@@ -21,6 +21,7 @@ if sys.platform == "win32":
         except Exception:
             pass
 
+import math
 import os
 import threading
 import tkinter as tk
@@ -28,6 +29,10 @@ import tkinter as tk
 import cv2
 import numpy as np
 from PIL import Image
+
+from core.proc import restore_system_env
+
+restore_system_env()
 
 from ui import theme
 from ui.theme import ctk
@@ -76,8 +81,11 @@ class Inkspire:
         theme.apply_window_icon(self.root)
         self.root.title("Inkspire")
 
-        width = min(1160, self.root.winfo_screenwidth() - 80)
-        height = min(800, self.root.winfo_screenheight() - 110)
+        # CTk multiplies geometry by the window scaling, so the screen size is converted to unscaled units first.
+        scaling = ctk.ScalingTracker.get_window_scaling(self.root)
+        width = min(1160, round(self.root.winfo_screenwidth() / scaling) - 80)
+        height = min(800, round(self.root.winfo_screenheight() / scaling) - 110)
+
         self.root.geometry(f"{width}x{height}")
         self.root.minsize(900, 600)
 
@@ -90,8 +98,10 @@ class Inkspire:
         self._textsvg_bounds = None
         self._svg_name = None
         self._preview_timer = None
+        self._preview_extract = False
         self._text_timer = None
         self._progress = (0, 0)
+        self._progress_shown = None
         self._engine_state = None
         self._polling_paused = False
         self._accessibility_dialog = None
@@ -194,7 +204,8 @@ class Inkspire:
             return self.cropped_image.shape[:2]
 
         if self.contour_bounds:
-            return int(self.contour_bounds[1]), int(self.contour_bounds[0])
+            # A flat shape (a single straight line) still has to count as one pixel thick.
+            return max(1, int(self.contour_bounds[1])), max(1, int(self.contour_bounds[0]))
 
         if self.contours:
             maxs = np.vstack(self.contours).max(axis=0)
@@ -374,7 +385,9 @@ class Inkspire:
 
         if self._preview_timer is not None:
             self.root.after_cancel(self._preview_timer)
+            extract = extract or self._preview_extract
 
+        self._preview_extract = extract
         self._preview_timer = self.root.after(250, lambda: self._refresh_preview(extract))
 
     def _refresh_preview(self, extract=True):
@@ -407,6 +420,7 @@ class Inkspire:
 
         total_points = sum(len(c) for c in contours)
         scale = self.scale.get()
+
         self._pill_contours.set(f"{len(contours)} contours")
         self._pill_points.set(f"{total_points:,} points".replace(",", " "))
         self._pill_size.set(f"{round(shape[1] * scale)} × {round(shape[0] * scale)} px", "accent")
@@ -557,6 +571,7 @@ class Inkspire:
         self._text_box = ctk.CTkTextbox(body, height=84, wrap="word", font=theme.font(14))
         self._text_box.grid(row=0, column=0, columnspan=3, sticky="ew")
         self._text_box.bind("<KeyRelease>", lambda e: self._schedule_text_change())
+        self._text_box.bind("<Control-o>", self._on_text_ctrl_o)
 
         font_head = ctk.CTkFrame(body, fg_color="transparent")
         font_head.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(12, 6))
@@ -701,6 +716,12 @@ class Inkspire:
             self.root.createcommand("tkAboutDialog", self._show_about)
             self.root.createcommand("tk::mac::ShowPreferences", self._show_keybinds)
 
+    def _on_text_ctrl_o(self, event):
+        self._browse()
+
+        # Stops Tk's Text class binding, which would insert a newline, and the global Ctrl+O binding.
+        return "break"
+
     def _browse(self):
         path = ask_open_filename(self.root, "Open image or SVG", IMAGE_TYPES)
 
@@ -738,16 +759,21 @@ class Inkspire:
             return
 
         self._set_mode("textsvg")
-        all_pts = np.vstack(contours)
-        mins = all_pts.min(axis=0)
-        maxs = all_pts.max(axis=0)
-        self._textsvg_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
-        self._textsvg_contours = [c - mins for c in contours]
+        self._textsvg_contours, self._textsvg_bounds = self._normalized(contours)
         self._svg_name = os.path.basename(path)
         self._lbl_svg.configure(text=f"{self._svg_name}  ·  {self._textsvg_bounds[0]:.0f} × {self._textsvg_bounds[1]:.0f}", text_color=theme.TEXT)
 
         self._update_status(f"Loaded SVG with {len(self._textsvg_contours)} paths.")
         self._refresh_preview(extract=False)
+
+    @staticmethod
+    def _normalized(contours):
+        """Contours shifted so their bounding box starts at the origin, plus that box's (width, height)."""
+        all_pts = np.vstack(contours)
+        mins = all_pts.min(axis=0)
+        maxs = all_pts.max(axis=0)
+
+        return [c - mins for c in contours], (maxs[0] - mins[0], maxs[1] - mins[1])
 
     def _recrop(self):
         if self.gray_image is None:
@@ -898,8 +924,9 @@ class Inkspire:
         state = self.draw_engine.state
         done, total = self._progress
 
-        if state != "idle" and total:
-            self._progress_bar.set(done / total)
+        if state != "idle" and total and done / total != self._progress_shown:
+            self._progress_shown = done / total
+            self._progress_bar.set(self._progress_shown)
 
         if state == self._engine_state:
             return
@@ -955,6 +982,7 @@ class Inkspire:
         }
 
         self._progress = (0, sum(len(c) for c in draw_contours))
+        self._progress_shown = 0
         self._progress_bar.set(0)
 
         threading.Thread(target=self.draw_engine.run, args=(draw_contours, params), daemon=True).start()
@@ -1010,6 +1038,7 @@ class Inkspire:
             return
 
         rgb = np.array(img.convert("RGB"))
+
         self._set_mode("image")
         self.gray_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         self.image_path = "(clipboard)"
@@ -1085,6 +1114,13 @@ class Inkspire:
         self._text_timer = None
         text = self._text_box.get("1.0", "end-1c").strip()
 
+        if not text and self._svg_name is None and self._textsvg_contours:
+            self._textsvg_contours = []
+            self._textsvg_bounds = None
+            self._update_status("Text cleared.")
+            self._refresh_preview(extract=False)
+            return
+
         if not text or not self.font_path:
             return
 
@@ -1103,11 +1139,7 @@ class Inkspire:
             self._update_status("No glyphs rendered.")
             return
 
-        all_pts = np.vstack(contours)
-        mins = all_pts.min(axis=0)
-        maxs = all_pts.max(axis=0)
-        self._textsvg_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
-        self._textsvg_contours = [c - mins for c in contours]
+        self._textsvg_contours, self._textsvg_bounds = self._normalized(contours)
         self._svg_name = None
         self._lbl_svg.configure(text="No SVG loaded", text_color=theme.MUTED)
 
@@ -1129,12 +1161,15 @@ class Inkspire:
             return
 
         img_h, img_w = shape
+        # Rounded down to the scale field's two decimals, so the drawing still fits once the field re-commits it.
+        scale = max(0.01, math.floor(min(width / img_w, height / img_h) * 100) / 100)
+
         self.offset_x.set(str(x))
         self.offset_y.set(str(y))
         self.relative_offset.set(False)
-        self.scale.set(round(min(width / img_w, height / img_h), 3))
+        self.scale.set(scale)
         self._widgets["scale"].sync()
-        self._update_status(f"Canvas set: {width} × {height} at ({x}, {y}), scale {self.scale.get():.3f}.")
+        self._update_status(f"Canvas set: {width} × {height} at ({x}, {y}), scale {self.scale.get():.2f}.")
 
     def _self_test(self):
         square = [np.array([[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]], dtype=np.float64)]

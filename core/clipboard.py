@@ -5,8 +5,6 @@ import io
 import sys
 from PIL import Image
 
-from core.proc import system_env
-
 __all__ = ["get_clipboard_image"]
 
 
@@ -21,8 +19,15 @@ def get_clipboard_image():
 
         img = ImageGrab.grabclipboard()
 
-        if img is not None:
+        if isinstance(img, Image.Image):
             return img
+
+        # Files copied in Explorer or Finder arrive as a list of paths.
+        for path in img if isinstance(img, list) else []:
+            try:
+                return Image.open(path)
+            except Exception:
+                continue
     except Exception:
         pass
 
@@ -33,7 +38,7 @@ def get_clipboard_image():
         try:
             data = subprocess.check_output(
                 ["xclip", "-selection", "clipboard", "-t", mime, "-o"],
-                stderr=subprocess.DEVNULL, env=system_env())
+                stderr=subprocess.DEVNULL)
 
             return Image.open(io.BytesIO(data))
         except Exception:
@@ -42,7 +47,7 @@ def get_clipboard_image():
     try:
         data = subprocess.check_output(
             ["xsel", "--clipboard", "--output"],
-            stderr=subprocess.DEVNULL, env=system_env())
+            stderr=subprocess.DEVNULL)
 
         return Image.open(io.BytesIO(data))
     except Exception:
@@ -51,7 +56,7 @@ def get_clipboard_image():
     try:
         data = subprocess.check_output(
             ["wl-paste", "--type", "image/png"],
-            stderr=subprocess.DEVNULL, env=system_env())
+            stderr=subprocess.DEVNULL)
 
         return Image.open(io.BytesIO(data))
     except Exception:

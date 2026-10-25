@@ -92,6 +92,10 @@ class DrawEngine:
                 self.on_status("Cancelled.")
                 return
 
+            if not self._wait_if_paused(f"Paused before start. {start_key} resumes, {stop_key} cancels."):
+                self.on_status("Cancelled.")
+                return
+
         s = params["scale"]
         delay = (1.0 / pts_per_sec) if pts_per_sec > 0 else 0
         btn = 1 if params["mouse_button"] == "left" else 3
@@ -141,7 +145,7 @@ class DrawEngine:
             if self.cancel_flag:
                 break
 
-            if not self._wait_if_paused(idx, total, start_key, stop_key):
+            if not self._wait_if_paused(f"Paused at contour {idx + 1}/{total}. {start_key} resumes, {stop_key} cancels."):
                 break
 
             if not self._sleep_with_cancel(0.01):
@@ -164,9 +168,9 @@ class DrawEngine:
         self._was_pressed = pressed
         return self.cancel_flag
 
-    def _wait_if_paused(self, idx, total, start_key, stop_key):
+    def _wait_if_paused(self, message):
         if not self._pause_event.is_set():
-            self.on_status(f"Paused at contour {idx + 1}/{total}. {start_key} resumes, {stop_key} cancels.")
+            self.on_status(message)
 
         while not self._pause_event.is_set():
             if self._should_cancel():

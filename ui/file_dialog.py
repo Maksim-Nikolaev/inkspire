@@ -8,8 +8,6 @@ import time
 from pathlib import Path
 from tkinter import filedialog
 
-from core.proc import system_env
-
 __all__ = ["ask_open_filename"]
 
 _last_dir = str(Path.home())
@@ -71,13 +69,18 @@ def _linux_command(parent, title, filetypes):
 def _run_blocking(parent, command):
     """Run the picker while keeping Tk responsive. Returns None when the picker itself failed."""
     try:
-        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=system_env())
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     except OSError:
         return None
 
-    while proc.poll() is None:
-        parent.update()
-        time.sleep(0.03)
+    try:
+        while proc.poll() is None:
+            parent.update()
+            time.sleep(0.03)
+    finally:
+        # The nested update() also runs the main window's quit handler, which exits from inside this loop.
+        if proc.poll() is None:
+            proc.terminate()
 
     output = proc.stdout.read().strip()
 
