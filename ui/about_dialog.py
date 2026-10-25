@@ -1,43 +1,49 @@
 """About dialog showing version, author, and license information."""
 
-import tkinter as tk
-from tkinter import ttk
+import webbrowser
 
-__all__ = ["AboutDialog"]
+from PIL import Image
 
-VERSION = "0.1.0"
+from core.version import __version__
+from ui import theme
+from ui.dialog import Dialog
+from ui.theme import ctk
+from ui.widgets import button
+
+__all__ = ["AboutDialog", "TAGLINE"]
+
 AUTHOR = "Maksim Nikolaev"
 REPO_URL = "https://github.com/Maksim-Nikolaev/inkspire"
 LINKEDIN_URL = "https://www.linkedin.com/in/maksim-nikolaev-dev/"
+TAGLINE = "Turns images, SVGs and text into line art your mouse draws in any app."
 
 
 class AboutDialog:
     def __init__(self, parent):
-        self.win = tk.Toplevel(parent)
-        self.win.title("About Inkspire")
-        self.win.resizable(False, False)
-        self.win.transient(parent)
-        self.win.grab_set()
+        self.win = Dialog(parent, "About Inkspire")
+        self.win.columnconfigure(0, weight=1)
 
-        pad = {"padx": 16, "pady": 4}
+        icon = Image.open(theme.icon_path("inkspire-256.png"))
+        ctk.CTkLabel(self.win, text="", image=ctk.CTkImage(icon, size=(76, 76))).grid(row=0, column=0, pady=(24, 10))
+        ctk.CTkLabel(self.win, text="Inkspire", font=theme.font(20, "bold")).grid(row=1, column=0)
+        ctk.CTkLabel(self.win, text=f"Version {__version__}", text_color=theme.MUTED).grid(row=2, column=0)
+        ctk.CTkLabel(
+            self.win, text=TAGLINE, wraplength=300, justify="center", text_color=theme.TEXT_2,
+        ).grid(row=3, column=0, padx=28, pady=(12, 12))
+        ctk.CTkLabel(
+            self.win, text=f"By {AUTHOR} · MIT License", text_color=theme.MUTED, font=theme.font(12),
+        ).grid(row=4, column=0)
 
-        ttk.Label(self.win, text="Inkspire", font=("", 16, "bold")).pack(**pad)
-        ttk.Label(self.win, text=f"Version {VERSION}").pack(**pad)
-        ttk.Label(
-            self.win,
-            text="Traces line art by moving the mouse along\ncontours extracted from an image.",
-            justify="center",
-        ).pack(**pad)
-        ttk.Label(self.win, text=f"Author: {AUTHOR}").pack(**pad)
-        ttk.Label(self.win, text="License: MIT").pack(**pad)
-        ttk.Label(self.win, text=REPO_URL, foreground="blue", cursor="hand2").pack(**pad)
-        ttk.Label(self.win, text=LINKEDIN_URL, foreground="blue", cursor="hand2").pack(**pad)
+        links = ctk.CTkFrame(self.win, fg_color="transparent")
+        links.grid(row=5, column=0, pady=(10, 0))
 
-        ttk.Button(self.win, text="Close", command=self.win.destroy).pack(pady=12)
+        for text, url in (("GitHub", REPO_URL), ("LinkedIn", LINKEDIN_URL)):
+            button(
+                links, text, lambda u=url: webbrowser.open(u), kind="ghost", width=92,
+                text_color=theme.ACCENT,
+            ).pack(side="left", padx=4)
 
-        self.win.update_idletasks()
-        w = self.win.winfo_width()
-        h = self.win.winfo_height()
-        x = parent.winfo_rootx() + (parent.winfo_width() - w) // 2
-        y = parent.winfo_rooty() + (parent.winfo_height() - h) // 2
-        self.win.geometry(f"+{x}+{y}")
+        button(self.win, "Close", self.win.destroy, width=120).grid(row=6, column=0, pady=(12, 22))
+
+        self.win.bind("<Escape>", lambda e: self.win.destroy())
+        self.win.present()

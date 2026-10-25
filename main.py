@@ -3,9 +3,9 @@
 Inkspire – traces line art by moving the mouse along extracted contours.
 
 Supports: B/W line art, colored images, halftones via multiple detection modes.
-Platforms: Linux (X11) and Windows.
+Platforms: Linux (X11, Wayland via Xwayland), Windows and macOS.
 
-Usage: python3 main.py
+Usage: python3 main.py [--self-test]
 """
 
 import sys
@@ -21,41 +21,65 @@ if sys.platform == "win32":
         except Exception:
             pass
 
+import os
+import threading
+import tkinter as tk
+
 import cv2
 import numpy as np
-import tkinter as tk
-from tkinter import filedialog, ttk
-from PIL import Image, ImageTk
-import threading
-import time
-from detection.modes import detect_art_bounds, detect_edges
-from detection.contours import extract_contours, skeletonize
+from PIL import Image
+
+from ui import theme
+from ui.theme import ctk
+from core import accessibility
+from core.clipboard import get_clipboard_image
+from core.config import load_config, save_config, load_session, save_session
+from core.fonts import discover_fonts, regular_path
+from core.keybinds import resolve_keycode, is_key_pressed
+from core.optimize import optimize_path
+from detection.contours import extract_contours
+from detection.modes import detect_art_bounds
 from detection.suggest import compute_suggested
 from detection.svg import load_svg
 from detection.text import render_text
-from core.fonts import discover_fonts
 from drawing.engine import DrawEngine
 from ui.about_dialog import AboutDialog
-from ui.crop_dialog import CropDialog
-from ui.tooltip import Tooltip
-from ui.widgets import LinkedSliderEntry
-from ui.preview import PreviewWindow
+from ui.accessibility_dialog import AccessibilityDialog
 from ui.canvas_picker import CanvasPicker
+from ui.crop_dialog import CropDialog
+from ui.file_dialog import ask_open_filename
 from ui.keybinds_dialog import KeybindsDialog
-from core.config import load_config, save_config, load_session, save_session
-from core.optimize import optimize_path
-from core.keybinds import resolve_keycode, is_key_pressed
-from core.clipboard import get_clipboard_image
+from ui.preview import PreviewCanvas, PreviewWindow, render_preview
+from ui.tooltip import Tooltip
+from ui.widgets import (
+    AutoScrollFrame, Card, FontList, Pill, Segmented, SliderRow, Toggle, ToggleRow, button, kbd, key_label,
+)
 
-MODES = ["Threshold", "Canny Edge", "Adaptive Threshold", "Auto"]
+MODES = [
+    ("Threshold", "Threshold"), ("Canny Edge", "Canny"),
+    ("Adaptive Threshold", "Adaptive"), ("Auto", "Auto"),
+]
+IMAGE_TYPES = [
+    ("All supported", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp *.svg"),
+    ("Images", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp"),
+    ("SVG", "*.svg"),
+    ("All files", "*.*"),
+]
+PREFERRED_FONTS = ["Noto Sans", "DejaVu Sans", "Segoe UI", "Arial", "Helvetica Neue", "Helvetica"]
+SIDEBAR_WIDTH = 384
 
-# ── Main GUI ──
 
 class Inkspire:
-    def __init__(self):
-        self.root = tk.Tk()
+    def __init__(self, self_test=False):
+        self.root = ctk.CTk()
+        theme.setup(self.root)
+        theme.apply_window_icon(self.root)
         self.root.title("Inkspire")
-        self.root.resizable(False, False)
+
+        width = min(1160, self.root.winfo_screenwidth() - 80)
+        height = min(800, self.root.winfo_screenheight() - 110)
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(900, 600)
 
         self.image_path = None
         self.gray_image = None
@@ -64,22 +88,30 @@ class Inkspire:
         self._image_bounds = None
         self._textsvg_contours = []
         self._textsvg_bounds = None
+        self._svg_name = None
         self._preview_timer = None
+        self._text_timer = None
+        self._progress = (0, 0)
+        self._engine_state = None
+        self._polling_paused = False
+        self._accessibility_dialog = None
         self.config = load_config()
-        stop_keycode = resolve_keycode(self.config.get("stop_key", "Escape"))
-        cancel_check = (lambda: is_key_pressed(stop_keycode)) if stop_keycode else None
-        self.draw_engine = DrawEngine(on_status=self._update_status, cancel_check=cancel_check)
 
-        self._widgets: dict[str, LinkedSliderEntry] = {}
+        self._start_key_name = self.config.get("start_key", "F5")
+        self._stop_key_name = self.config.get("stop_key", "Escape")
+        stop_keycode = resolve_keycode(self._stop_key_name)
+        cancel_check = (lambda: is_key_pressed(stop_keycode)) if stop_keycode is not None else None
+        self.draw_engine = DrawEngine(on_status=self._update_status, cancel_check=cancel_check, on_progress=self._on_progress)
 
-        # Detection mode
+        self._widgets: dict[str, SliderRow] = {}
+
         self.detect_mode = tk.StringVar(value="Auto")
+        self.input_mode_var = tk.StringVar(value="image")
 
-        # Settings (drawing settings loaded from config, detection defaults are fixed)
         cfg = self.config
         self.scale = tk.DoubleVar(value=cfg.get("scale", 1.0))
-        self.offset_x = tk.IntVar(value=cfg.get("offset_x", 200))
-        self.offset_y = tk.IntVar(value=cfg.get("offset_y", 200))
+        self.offset_x = tk.StringVar(value=str(cfg.get("offset_x", 200)))
+        self.offset_y = tk.StringVar(value=str(cfg.get("offset_y", 200)))
         self.speed = tk.IntVar(value=cfg.get("speed", 50))
         self.threshold = tk.IntVar(value=128)
         self.canny_lo = tk.IntVar(value=50)
@@ -97,35 +129,43 @@ class Inkspire:
         self.auto_preview = tk.BooleanVar(value=cfg.get("auto_preview", True))
         self.optimize_path = tk.BooleanVar(value=cfg.get("optimize_path", False))
 
-        self.text_input = tk.StringVar(value="")
         self.font_size = tk.IntVar(value=48)
         self.font_path = None
         self._font_list = []
+        self._fonts_loading = False
 
         self.preview = None
         self._restoring_session = False
 
         self._build_gui()
-        self.root.bind_all("<Escape>", lambda e: self._cancel())
-        self.root.bind_all("<Control-v>", self._on_ctrl_v)
+        self._bind_keys()
         self._setup_traces()
         self._update_mode_visibility()
-        self._restore_session()
+        self._update_position_visibility()
 
-        # Global hotkey polling (works even when another app has focus)
-        start_keycode = resolve_keycode(self.config.get("start_key", "F5"))
-        self._start_keycode = start_keycode
+        if not self_test:
+            self._restore_session()
+
+        self._show_page()
+        self._refresh_stats()
+
+        ctk.AppearanceModeTracker.add(self._on_appearance_change, self.root)
+        theme.watch_appearance(self.root)
+
+        self._start_keycode = resolve_keycode(self._start_key_name)
         self._start_key_was_pressed = False
-        if start_keycode:
-            self._poll_start_key()
+        self._poll()
+
+        if self_test:
+            self.root.after(1200, self._self_test)
+        elif accessibility.needs_permission():
+            self.root.after(600, self._check_accessibility)
 
         self.root.mainloop()
 
     @property
     def input_mode(self):
-        if hasattr(self, "_notebook"):
-            return "image" if self._notebook.index("current") == 0 else "textsvg"
-        return "image"
+        return self.input_mode_var.get()
 
     @property
     def contours(self):
@@ -149,6 +189,20 @@ class Inkspire:
         else:
             self._textsvg_bounds = value
 
+    def _current_shape(self):
+        if self.input_mode == "image" and self.cropped_image is not None:
+            return self.cropped_image.shape[:2]
+
+        if self.contour_bounds:
+            return int(self.contour_bounds[1]), int(self.contour_bounds[0])
+
+        if self.contours:
+            maxs = np.vstack(self.contours).max(axis=0)
+
+            return int(maxs[1]) + 1, int(maxs[0]) + 1
+
+        return None
+
     def _sync_all_widgets(self):
         for w in self._widgets.values():
             w.sync()
@@ -156,34 +210,64 @@ class Inkspire:
     def _set_widget_visible(self, var_name, visible):
         self._widgets[var_name].set_visible(visible)
 
-    # ── Mode-dependent visibility ──
-
     def _update_mode_visibility(self):
         mode = self.detect_mode.get()
 
-        # Threshold params
         self._set_widget_visible("threshold", mode in ("Threshold", "Auto"))
-        # Canny params
         self._set_widget_visible("canny_lo", mode in ("Canny Edge", "Auto"))
         self._set_widget_visible("canny_hi", mode in ("Canny Edge", "Auto"))
-        # Adaptive params
         self._set_widget_visible("adaptive_block", mode in ("Adaptive Threshold", "Auto"))
         self._set_widget_visible("adaptive_c", mode in ("Adaptive Threshold", "Auto"))
 
-    def _on_tab_change(self):
-        if self.input_mode == "textsvg" and not self._font_list:
-            self.root.after(50, self._populate_fonts)
-        if self.preview and self.preview.is_open():
-            self._update_live_preview()
+    def _update_position_visibility(self):
+        if self.relative_offset.get():
+            self._fixed_row.grid_remove()
+            self._position_hint.configure(text="The pointer position at start becomes the bottom-left corner.")
+        else:
+            self._fixed_row.grid()
+            self._position_hint.configure(text="Screen pixels of the top-left corner.")
+
+    def _set_mode(self, mode):
+        if self.input_mode != mode:
+            self.input_mode_var.set(mode)
+            self._show_page()
+
+    def _show_page(self):
+        if self.input_mode == "image":
+            self._page_text.pack_forget()
+            self._page_image.pack(fill="x", before=self._card_draw)
+            self._preview_view.set_empty(
+                "Nothing to trace yet",
+                "Open an image or paste one with Ctrl+V. Line art, photos and halftones all work.",
+                [self._empty_open, self._empty_paste],
+            )
+        else:
+            self._page_image.pack_forget()
+            self._page_text.pack(fill="x", before=self._card_draw)
+            self._preview_view.set_empty(
+                "Nothing to trace yet",
+                "Type some text and pick a font, or open an SVG file.",
+                [self._empty_svg],
+            )
+
+            if not self._font_list and not self._fonts_loading:
+                self.root.after(50, self._populate_fonts)
+            elif not self._textsvg_contours:
+                self._schedule_text_change()
+
+        self._refresh_preview(extract=False)
 
     def _restore_session(self):
         session = load_session()
+
         if session is None:
             return
 
         det = session.get("detection_settings", {})
+
         if "mode" in det:
             self.detect_mode.set(det["mode"])
+
         for key, var in [
             ("threshold", self.threshold), ("canny_lo", self.canny_lo),
             ("canny_hi", self.canny_hi), ("adaptive_block", self.adaptive_block),
@@ -193,53 +277,62 @@ class Inkspire:
         ]:
             if key in det:
                 var.set(det[key])
+
         if "skeleton" in det:
             self.use_skeleton.set(det["skeleton"])
 
         drw = session.get("drawing_settings", {})
+
         for key, var in [
-            ("scale", self.scale), ("offset_x", self.offset_x),
-            ("offset_y", self.offset_y), ("speed", self.speed),
-            ("delay_before", self.delay_before),
+            ("scale", self.scale), ("speed", self.speed), ("delay_before", self.delay_before),
         ]:
             if key in drw:
                 var.set(drw[key])
-        if "mouse_button" in drw:
-            self.mouse_button.set(drw["mouse_button"])
-        if "relative_offset" in drw:
-            self.relative_offset.set(drw["relative_offset"])
-        if "auto_preview" in drw:
-            self.auto_preview.set(drw["auto_preview"])
+
+        for key, var in [("offset_x", self.offset_x), ("offset_y", self.offset_y)]:
+            if key in drw:
+                var.set(str(drw[key]))
+
+        for key, var in [
+            ("mouse_button", self.mouse_button), ("relative_offset", self.relative_offset),
+            ("auto_preview", self.auto_preview),
+        ]:
+            if key in drw:
+                var.set(drw[key])
+
         if "optimize_path" in drw:
             self.optimize_path.set(drw["optimize_path"])
 
         self.root.after(10, self._sync_all_widgets)
         self.root.after(10, self._update_mode_visibility)
 
-        tab = session.get("input_tab", 0)
-        if tab == 1:
-            self._notebook.select(1)
+        if session.get("input_tab", 0) == 1:
+            self.input_mode_var.set("textsvg")
 
         text = session.get("text_content", "")
+
         if text:
             self._text_box.delete("1.0", "end")
             self._text_box.insert("1.0", text)
 
         font_path = session.get("font_path")
-        if font_path:
+
+        if font_path and os.path.exists(font_path):
             self.font_path = font_path
-            name = font_path.split("/")[-1].split("\\")[-1]
-            self._font_combo.set(name)
+            self._lbl_font.configure(text=os.path.basename(font_path))
 
         font_size = session.get("font_size")
+
         if font_size:
             self.font_size.set(font_size)
 
         source = session.get("source_path")
+
         if source and source != "(clipboard)":
-            import os
             if os.path.exists(source):
                 self._restoring_session = True
+                mode = self.input_mode
+
                 def _restore_source():
                     try:
                         if source.lower().endswith(".svg"):
@@ -248,295 +341,388 @@ class Inkspire:
                             self._load_image(source)
                     finally:
                         self._restoring_session = False
+                        self._set_mode(mode)
+
                 self.root.after(100, _restore_source)
             else:
                 self.image_path = None
 
-    # ── Traces for live preview ──
-
     def _setup_traces(self):
         live_vars = [
-            self.threshold, self.min_contour_len, self.simplify, self.scale,
+            self.threshold, self.min_contour_len, self.simplify,
             self.canny_lo, self.canny_hi, self.adaptive_block, self.adaptive_c,
             self.blur_radius, self.morph_iter,
         ]
+
         for var in live_vars:
             var.trace_add("write", lambda *_: self._schedule_preview_update())
+
         self.use_skeleton.trace_add("write", lambda *_: self._schedule_preview_update())
         self.detect_mode.trace_add("write", lambda *_: self._on_mode_change())
-        self.font_size.trace_add("write", lambda *_: self._on_text_change())
+        self.scale.trace_add("write", lambda *_: self._schedule_preview_update(extract=False))
+        self.font_size.trace_add("write", lambda *_: self._schedule_text_change())
+        self.relative_offset.trace_add("write", lambda *_: self._update_position_visibility())
+        self.auto_preview.trace_add("write", lambda *_: self._schedule_preview_update())
 
     def _on_mode_change(self):
         self._update_mode_visibility()
         self._schedule_preview_update()
 
-    def _schedule_preview_update(self):
-        if not self.auto_preview.get():
+    def _schedule_preview_update(self, extract=True):
+        if extract and not self.auto_preview.get():
             return
-        if self.input_mode == "image" and self.cropped_image is None:
-            return
+
         if self._preview_timer is not None:
             self.root.after_cancel(self._preview_timer)
-        self._preview_timer = self.root.after(300, self._update_live_preview)
 
-    def _update_live_preview(self):
+        self._preview_timer = self.root.after(250, lambda: self._refresh_preview(extract))
+
+    def _refresh_preview(self, extract=True):
         self._preview_timer = None
-        if self.input_mode == "image":
-            self._extract_contours()
-        if self.preview and self.preview.is_open():
-            if self.input_mode == "image" and self.cropped_image is not None:
-                shape = self.cropped_image.shape[:2]
-            elif self.contour_bounds:
-                shape = (int(self.contour_bounds[1]), int(self.contour_bounds[0]))
-            else:
-                return
-            self.preview.render(self.contours, self.scale.get(), shape)
 
-    # ── GUI build ──
+        if extract and self.input_mode == "image":
+            self._extract_contours()
+
+        shape = self._current_shape()
+
+        if self.contours and shape:
+            self._preview_view.show(self.contours, self.scale.get(), shape)
+
+            if self.preview and self.preview.is_open():
+                self.preview.render(self.contours, self.scale.get(), shape)
+        else:
+            self._preview_view.clear()
+
+        self._refresh_stats()
+
+    def _refresh_stats(self):
+        contours = self.contours
+        shape = self._current_shape()
+
+        if not contours or not shape:
+            for pill in (self._pill_contours, self._pill_points, self._pill_size):
+                pill.grid_remove()
+
+            return
+
+        total_points = sum(len(c) for c in contours)
+        scale = self.scale.get()
+        self._pill_contours.set(f"{len(contours)} contours")
+        self._pill_points.set(f"{total_points:,} points".replace(",", " "))
+        self._pill_size.set(f"{round(shape[1] * scale)} × {round(shape[0] * scale)} px", "accent")
+
+        for pill in (self._pill_contours, self._pill_points, self._pill_size):
+            pill.grid()
 
     def _build_gui(self):
-        pad = {"padx": 6, "pady": 3}
+        self.root.columnconfigure(1, weight=1)
+        self.root.rowconfigure(2, weight=1)
 
-        # ── Tabbed Input ──
-        self._notebook = ttk.Notebook(self.root)
-        self._notebook.pack(fill="x", **pad)
-        self._notebook.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_change())
+        self._build_header()
+        ctk.CTkFrame(self.root, height=1, corner_radius=0, fg_color=theme.BORDER).grid(row=1, column=0, columnspan=2, sticky="ew")
+        self._build_sidebar()
+        self._build_preview()
 
-        # -- Image Tab --
-        tab_image = ttk.Frame(self._notebook)
-        self._notebook.add(tab_image, text="Image")
+    def _build_header(self):
+        header = ctk.CTkFrame(self.root, height=56, corner_radius=0, fg_color=theme.SURFACE)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        header.grid_propagate(False)
+        header.rowconfigure(0, weight=1)
+        header.columnconfigure(2, weight=1)
 
-        frame_file = ttk.Frame(tab_image)
-        frame_file.pack(fill="x", **pad)
-        self.lbl_file = ttk.Label(frame_file, text="No file selected")
-        self.lbl_file.pack(side="left", **pad)
-        ttk.Button(frame_file, text="Re-crop", command=self._recrop).pack(side="right", **pad)
-        ttk.Button(frame_file, text="Browse", command=self._browse).pack(side="right", **pad)
-        ttk.Button(frame_file, text="Paste", command=self._paste_from_clipboard).pack(side="right", **pad)
+        icon = Image.open(theme.icon_path("inkspire-256.png"))
+        brand = ctk.CTkLabel(
+            header, text="  Inkspire", image=ctk.CTkImage(icon, size=(28, 28)), compound="left",
+            font=theme.font(16, "bold"),
+        )
+        brand.grid(row=0, column=0, padx=(18, 24))
 
-        # ── Detection Mode ──
-        self._frame_mode = ttk.LabelFrame(tab_image, text="Detection Mode")
-        self._frame_mode.pack(fill="x", **pad)
+        Segmented(
+            header, [("image", "Image"), ("textsvg", "Text / SVG")], self.input_mode_var,
+            command=lambda _: self._show_page(), width=220,
+        ).grid(row=0, column=1)
 
-        mode_row = ttk.Frame(self._frame_mode)
-        mode_row.pack(fill="x", **pad)
-        for m in MODES:
-            ttk.Radiobutton(mode_row, text=m, variable=self.detect_mode, value=m).pack(side="left", padx=4)
+        self._state_pill = Pill(header, "Ready")
+        self._state_pill.grid(row=0, column=3, padx=(0, 10))
 
-        # ── Detection Parameters ──
-        self._frame_det = ttk.LabelFrame(tab_image, text="Detection Parameters")
-        self._frame_det.pack(fill="x", **pad)
+        self._access_button = button(
+            header, "Mouse access off", self._show_accessibility, kind="ghost", height=28,
+            fg_color=theme.WARN_SOFT, hover_color=theme.WARN_SOFT, text_color=theme.WARN,
+        )
+        self._access_button.grid(row=0, column=4, padx=(0, 6))
+        self._access_button.grid_remove()
 
-        row = 0
-        self._widgets["threshold"] = LinkedSliderEntry(
-            self._frame_det, row, "Threshold (1-254):", self.threshold, "threshold",
-            is_int=True, from_=1, to=254, step=1, pad=pad,
-            tooltip="Brightness cutoff (0=black, 255=white). Pixels darker than this become edges. Lower = more detected. Otsu auto-picks the optimal split.")
-        row += 1
-        self._widgets["canny_lo"] = LinkedSliderEntry(
-            self._frame_det, row, "Canny low:", self.canny_lo, "canny_lo",
-            is_int=True, from_=1, to=300, step=1, pad=pad,
+        button(header, "Keybinds", self._show_keybinds, kind="ghost", width=88).grid(row=0, column=5, padx=2)
+        button(header, "About", self._show_about, kind="ghost", width=70).grid(row=0, column=6, padx=(2, 14))
+
+    def _build_sidebar(self):
+        side = ctk.CTkFrame(self.root, fg_color="transparent", corner_radius=0, width=SIDEBAR_WIDTH)
+        side.grid(row=2, column=0, sticky="ns")
+        side.rowconfigure(0, weight=1)
+        side.columnconfigure(0, weight=1)
+
+        self._scroll = AutoScrollFrame(side, width=SIDEBAR_WIDTH, fg_color="transparent", corner_radius=0)
+        self._scroll.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=(10, 0))
+
+        self._page_image = ctk.CTkFrame(self._scroll, fg_color="transparent", corner_radius=0)
+        self._page_text = ctk.CTkFrame(self._scroll, fg_color="transparent", corner_radius=0)
+        self._build_image_page(self._page_image)
+        self._build_text_page(self._page_text)
+
+        self._card_draw = Card(self._scroll, "Drawing")
+        self._card_draw.pack(fill="x", pady=(0, 10), padx=(0, 6))
+        self._build_drawing_card(self._card_draw.body)
+
+        self._build_actions(side)
+
+    def _build_image_page(self, page):
+        source = Card(page, "Source")
+        source.pack(fill="x", pady=(0, 10), padx=(0, 6))
+        body = source.body
+        body.columnconfigure((0, 1, 2), weight=1, uniform="src")
+
+        self.lbl_file = ctk.CTkLabel(body, text="No image loaded", font=theme.font(14, "bold"), anchor="w")
+        self.lbl_file.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.lbl_crop = ctk.CTkLabel(body, text="PNG, JPG, BMP, GIF, TIFF, WebP or SVG", text_color=theme.MUTED, anchor="w", font=theme.font(12))
+        self.lbl_crop.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        button(body, "Open…", self._browse, kind="primary").grid(row=2, column=0, sticky="ew", padx=(0, 4))
+        button(body, "Paste", self._paste_from_clipboard).grid(row=2, column=1, sticky="ew", padx=4)
+        self._btn_recrop = button(body, "Re-crop", self._recrop)
+        self._btn_recrop.grid(row=2, column=2, sticky="ew", padx=(4, 0))
+
+        detection = Card(page, "Detection")
+        detection.pack(fill="x", pady=(0, 10), padx=(0, 6))
+        body = detection.body
+        Segmented(body, MODES, self.detect_mode).grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+
+        self._widgets["threshold"] = SliderRow(
+            body, 1, "Threshold", self.threshold, is_int=True, from_=1, to=254, step=1,
+            tooltip="Brightness cutoff (0 = black, 255 = white). Pixels darker than this become edges. Lower = more detected. Otsu auto-picks the optimal split.")
+        self._widgets["canny_lo"] = SliderRow(
+            body, 2, "Canny low", self.canny_lo, is_int=True, from_=1, to=300, step=1,
             tooltip="Minimum gradient strength to start an edge. Lower = more edges, more noise. Typical: 30-100.")
-        row += 1
-        self._widgets["canny_hi"] = LinkedSliderEntry(
-            self._frame_det, row, "Canny high:", self.canny_hi, "canny_hi",
-            is_int=True, from_=1, to=500, step=1, pad=pad,
-            tooltip="Minimum gradient strength to confirm an edge. Lower = more connected edges. Typical: 100-250. Keep > Canny low.")
-        row += 1
-        self._widgets["adaptive_block"] = LinkedSliderEntry(
-            self._frame_det, row, "Adaptive block size:", self.adaptive_block, "adaptive_block",
-            is_int=True, from_=3, to=99, step=2, pad=pad,
-            tooltip="Size of the local neighborhood for threshold calculation. Must be odd. Larger = smoother, less sensitive to small features. Typical: 7-21.")
-        row += 1
-        self._widgets["adaptive_c"] = LinkedSliderEntry(
-            self._frame_det, row, "Adaptive C:", self.adaptive_c, "adaptive_c",
-            is_int=True, from_=-20, to=20, step=1, pad=pad,
+        self._widgets["canny_hi"] = SliderRow(
+            body, 3, "Canny high", self.canny_hi, is_int=True, from_=1, to=500, step=1,
+            tooltip="Minimum gradient strength to confirm an edge. Lower = more connected edges. Typical: 100-250. Keep above Canny low.")
+        self._widgets["adaptive_block"] = SliderRow(
+            body, 4, "Block size", self.adaptive_block, is_int=True, from_=3, to=99, step=2,
+            tooltip="Size of the local neighborhood for adaptive threshold. Must be odd. Larger = smoother, less sensitive to small features. Typical: 7-21.")
+        self._widgets["adaptive_c"] = SliderRow(
+            body, 5, "Adaptive C", self.adaptive_c, is_int=True, from_=-20, to=20, step=1,
             tooltip="Constant subtracted from the local mean. Higher = fewer edges detected. Typical: 0-10.")
 
-        self._frame_det.columnconfigure(1, weight=1)
+        processing = Card(page, "Processing")
+        processing.pack(fill="x", pady=(0, 10), padx=(0, 6))
+        self._widgets["blur_radius"] = SliderRow(
+            processing.body, 0, "Blur", self.blur_radius, is_int=True, from_=0, to=20, step=1,
+            tooltip="Gaussian blur radius applied before detection. Removes halftone dots and noise. 0 = off. For halftones try 2-5.")
+        self._widgets["morph_iter"] = SliderRow(
+            processing.body, 1, "Cleanup", self.morph_iter, is_int=True, from_=0, to=10, step=1,
+            tooltip="Morphological passes on the edge mask. Close fills small gaps, open removes specks. 0 = off, 1-2 = light cleanup.")
 
-        # ── Pre/Post Processing ──
-        self._frame_proc = ttk.LabelFrame(tab_image, text="Pre/Post Processing")
-        self._frame_proc.pack(fill="x", **pad)
-
-        row = 0
-        self._widgets["blur_radius"] = LinkedSliderEntry(
-            self._frame_proc, row, "Blur radius (halftone):", self.blur_radius, "blur_radius",
-            is_int=True, from_=0, to=20, step=1, pad=pad,
-            tooltip="Gaussian blur kernel radius applied before detection. Removes halftone dots and noise. 0 = off. For halftones try 2-5.")
-        row += 1
-        self._widgets["morph_iter"] = LinkedSliderEntry(
-            self._frame_proc, row, "Morph cleanup (iter):", self.morph_iter, "morph_iter",
-            is_int=True, from_=0, to=10, step=1, pad=pad,
-            tooltip="Morphological operations to clean up the edge mask. Close fills small gaps, open removes specks. 0 = off. 1-2 = light cleanup.")
-
-        self._frame_proc.columnconfigure(1, weight=1)
-
-        # ── Contour Settings ──
-        self._frame_cont = ttk.LabelFrame(tab_image, text="Contour Settings")
-        self._frame_cont.pack(fill="x", **pad)
-
-        row = 0
-        self._widgets["min_contour_len"] = LinkedSliderEntry(
-            self._frame_cont, row, "Min contour length:", self.min_contour_len, "min_contour_len",
-            is_int=True, from_=1, to=500, step=1, pad=pad,
+        contours = Card(page, "Contours")
+        contours.pack(fill="x", pady=(0, 10), padx=(0, 6))
+        body = contours.body
+        self._widgets["min_contour_len"] = SliderRow(
+            body, 0, "Min length", self.min_contour_len, is_int=True, from_=1, to=500, step=1,
             tooltip="Contours shorter than this (in points) are discarded. Filters out noise fragments. Higher = cleaner but may lose small details.")
-        row += 1
-        self._widgets["simplify"] = LinkedSliderEntry(
-            self._frame_cont, row, "Simplify (epsilon):", self.simplify, "simplify",
-            is_int=False, from_=0.1, to=10.0, step=0.1, pad=pad,
-            tooltip="How aggressively contour paths are simplified. Higher = fewer points, faster drawing, but corners get rounded. 0.5 = detailed, 2.0 = aggressive.")
-        row += 1
-        skel_cb = ttk.Checkbutton(self._frame_cont, text="Skeletonize (thin lines to 1px)",
-                                  variable=self.use_skeleton)
-        skel_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
-        Tooltip(skel_cb, "Thin all detected regions to 1px centerlines. Useful when source has thick brush strokes. Off by default.")
-        row += 1
-        opt_cb = ttk.Checkbutton(self._frame_cont, text="Optimize path order",
-                                 variable=self.optimize_path)
-        opt_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
-        Tooltip(opt_cb, "Reorder contours to minimize pen-up travel distance using nearest-neighbor. May improve drawing speed for scattered contours.")
-        row += 1
-        self.btn_suggested = ttk.Button(self._frame_cont, text="Reset to Suggested",
-                                        command=self._apply_suggested, state="disabled")
-        self.btn_suggested.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+        self._widgets["simplify"] = SliderRow(
+            body, 1, "Simplify", self.simplify, is_int=False, from_=0.1, to=10.0, step=0.1,
+            tooltip="How aggressively paths are simplified. Higher = fewer points and faster drawing, but corners get rounded. 0.5 = detailed, 2.0 = aggressive.")
 
-        self._frame_cont.columnconfigure(1, weight=1)
+        ToggleRow(body, "Skeletonize to 1 px lines", self.use_skeleton,
+                  tooltip="Thin all detected regions to 1 px centerlines. Useful when the source has thick brush strokes.").grid(
+            row=2, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        ToggleRow(body, "Optimize path order", self.optimize_path,
+                  tooltip="Reorder contours with nearest-neighbor search to minimize pen-up travel. Helps with scattered contours.").grid(
+            row=3, column=0, columnspan=3, sticky="ew", pady=4)
 
-        # -- Text / SVG Tab --
-        tab_text = ttk.Frame(self._notebook)
-        self._notebook.add(tab_text, text="Text / SVG")
+        self.btn_suggested = button(body, "Reset to suggested", self._apply_suggested, kind="ghost", state="disabled", height=28, text_color=theme.ACCENT)
+        self.btn_suggested.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
-        frame_svg = ttk.Frame(tab_text)
-        frame_svg.pack(fill="x", **pad)
-        ttk.Label(frame_svg, text="SVG:").pack(side="left", **pad)
-        ttk.Button(frame_svg, text="Browse SVG", command=self._browse_svg).pack(side="left", **pad)
+    def _build_text_page(self, page):
+        svg = Card(page, "SVG")
+        svg.pack(fill="x", pady=(0, 10), padx=(0, 6))
+        body = svg.body
+        body.columnconfigure(0, weight=1)
+        self._lbl_svg = ctk.CTkLabel(body, text="No SVG loaded", anchor="w", text_color=theme.MUTED)
+        self._lbl_svg.grid(row=0, column=0, sticky="ew")
+        button(body, "Open SVG…", self._browse_svg).grid(row=0, column=1, sticky="e")
 
-        frame_text = ttk.LabelFrame(tab_text, text="Text Input")
-        frame_text.pack(fill="x", **pad)
+        text = Card(page, "Text")
+        text.pack(fill="x", pady=(0, 10), padx=(0, 6))
+        body = text.body
+        body.columnconfigure(0, weight=1)
 
-        font_row = ttk.Frame(frame_text)
-        font_row.pack(fill="x", **pad)
-        ttk.Label(font_row, text="Font:").pack(side="left", **pad)
-        self._font_combo = ttk.Combobox(font_row, width=30, state="readonly")
-        self._font_combo.pack(side="left", **pad)
-        self._font_combo.bind("<<ComboboxSelected>>", lambda e: self._on_font_change())
-        ttk.Button(font_row, text="Browse…", command=self._browse_font).pack(side="left", **pad)
-        ttk.Button(font_row, text="Scan Fonts", command=self._populate_fonts).pack(side="left", **pad)
+        self._text_box = ctk.CTkTextbox(body, height=84, wrap="word", font=theme.font(14))
+        self._text_box.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self._text_box.bind("<KeyRelease>", lambda e: self._schedule_text_change())
 
-        size_row = ttk.Frame(frame_text)
-        size_row.pack(fill="x", **pad)
-        ttk.Label(size_row, text="Size (px):").pack(side="left", **pad)
-        ttk.Scale(size_row, variable=self.font_size, from_=8, to=200,
-                  orient="horizontal",
-                  command=lambda v: self.font_size.set(round(float(v)))
-                  ).pack(side="left", fill="x", expand=True, **pad)
-        ttk.Entry(size_row, textvariable=self.font_size, width=5).pack(side="left", **pad)
+        font_head = ctk.CTkFrame(body, fg_color="transparent")
+        font_head.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        font_head.columnconfigure(1, weight=1)
+        ctk.CTkLabel(font_head, text="Font", text_color=theme.TEXT_2).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self._lbl_font = ctk.CTkLabel(font_head, text="Loading fonts…", text_color=theme.MUTED, anchor="e", font=theme.font(12))
+        self._lbl_font.grid(row=0, column=1, sticky="e")
 
-        self._text_box = tk.Text(frame_text, height=4, width=40)
-        self._text_box.pack(fill="x", **pad)
-        self._text_box.bind("<KeyRelease>", lambda e: self._on_text_change())
+        self._font_picker = FontList(body, on_select=self._on_font_change, rows=6)
+        self._font_picker.grid(row=2, column=0, columnspan=3, sticky="ew")
 
-        btn_text_row = ttk.Frame(tab_text)
-        btn_text_row.pack(fill="x", **pad)
-        ttk.Button(btn_text_row, text="Preview", command=self._preview_text_svg).pack(side="left", **pad)
+        font_buttons = ctk.CTkFrame(body, fg_color="transparent")
+        font_buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 10))
+        font_buttons.columnconfigure((0, 1), weight=1, uniform="font")
+        button(font_buttons, "Font file…", self._browse_font, height=28).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        button(font_buttons, "Rescan fonts", lambda: self._populate_fonts(refresh=True), height=28).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        # ── Drawing Settings ──
-        self._frame_draw = ttk.LabelFrame(self.root, text="Drawing Settings")
-        self._frame_draw.pack(fill="x", **pad)
+        size_rows = ctk.CTkFrame(body, fg_color="transparent")
+        size_rows.grid(row=4, column=0, columnspan=3, sticky="ew")
+        size_rows.columnconfigure(1, weight=1)
+        self._widgets["font_size"] = SliderRow(
+            size_rows, 0, "Size (px)", self.font_size, is_int=True, from_=8, to=200, step=1,
+            tooltip="Glyph height in pixels before drawing scale is applied.")
 
-        row = 0
-        self._widgets["scale"] = LinkedSliderEntry(
-            self._frame_draw, row, "Scale:", self.scale, "scale",
-            is_int=False, from_=0.10, to=10.0, step=0.01, pad=pad,
-            tooltip="Multiply the image dimensions by this factor for drawing. 1.0 = original size. 2.0 = double size.")
-        row += 1
-        ttk.Label(self._frame_draw, text="Offset X (px):").grid(row=row, column=0, sticky="w", **pad)
-        ox_entry = ttk.Entry(self._frame_draw, textvariable=self.offset_x, width=8)
-        ox_entry.grid(row=row, column=1, sticky="w", **pad)
-        Tooltip(ox_entry, "Absolute screen pixel X for the top-left corner of the drawn image.")
+    def _build_drawing_card(self, body):
+        self._widgets["scale"] = SliderRow(
+            body, 0, "Scale", self.scale, is_int=False, from_=0.1, to=10.0, step=0.01,
+            tooltip="Multiply the image dimensions by this factor for drawing. 1.0 = original size, 2.0 = double size.")
+        self._widgets["speed"] = SliderRow(
+            body, 1, "Speed", self.speed, is_int=True, from_=0, to=200, step=1,
+            tooltip="Drawing speed in points per second. Higher = faster. 0 = as fast as possible.")
+        self._widgets["delay_before"] = SliderRow(
+            body, 2, "Countdown", self.delay_before, is_int=True, from_=0, to=10, step=1,
+            tooltip="Seconds before drawing begins. Use them to switch to your target app.")
 
-        row += 1
-        ttk.Label(self._frame_draw, text="Offset Y (px):").grid(row=row, column=0, sticky="w", **pad)
-        oy_entry = ttk.Entry(self._frame_draw, textvariable=self.offset_y, width=8)
-        oy_entry.grid(row=row, column=1, sticky="w", **pad)
-        Tooltip(oy_entry, "Absolute screen pixel Y for the top-left corner of the drawn image.")
+        label = ctk.CTkLabel(body, text="Button", text_color=theme.TEXT_2, anchor="w")
+        label.grid(row=3, column=0, sticky="w", pady=(10, 3))
+        Tooltip(label, "Which button to hold while drawing. Some apps draw with the left button, some with the right.")
+        Segmented(body, [("left", "Left"), ("right", "Right")], self.mouse_button).grid(
+            row=3, column=1, columnspan=2, sticky="ew", pady=(10, 3))
 
-        row += 1
-        rel_cb = ttk.Checkbutton(self._frame_draw, text="Relative to mouse (bottom-left corner)",
-                                 variable=self.relative_offset)
-        rel_cb.grid(row=row, column=0, columnspan=3, sticky="w", **pad)
-        Tooltip(rel_cb, "When enabled, ignores Offset X/Y. Your mouse position at draw start becomes the bottom-left corner of the image.")
+        label = ctk.CTkLabel(body, text="Position", text_color=theme.TEXT_2, anchor="w")
+        label.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        Tooltip(label, "Start at the mouse pointer, or at fixed screen coordinates (set them by hand or with Pick area).")
+        Segmented(body, [(True, "At pointer"), (False, "Fixed")], self.relative_offset).grid(
+            row=4, column=1, columnspan=2, sticky="ew", pady=(6, 0))
 
-        row += 1
-        self._widgets["speed"] = LinkedSliderEntry(
-            self._frame_draw, row, "Speed (pts/s):", self.speed, "speed",
-            is_int=True, from_=0, to=200, step=1, pad=pad,
-            tooltip="Drawing speed in points per second. Higher = faster. 0 = maximum speed (no delay). Default: 50.")
+        self._position_hint = ctk.CTkLabel(body, text="", text_color=theme.MUTED, anchor="w", font=theme.font(12), wraplength=SIDEBAR_WIDTH - 60, justify="left")
+        self._position_hint.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(4, 0))
 
-        row += 1
-        ttk.Label(self._frame_draw, text="Mouse button:").grid(row=row, column=0, sticky="w", **pad)
-        btn_frame = ttk.Frame(self._frame_draw)
-        btn_frame.grid(row=row, column=1, sticky="w", **pad)
-        ttk.Radiobutton(btn_frame, text="Left", variable=self.mouse_button, value="left").pack(side="left")
-        ttk.Radiobutton(btn_frame, text="Right", variable=self.mouse_button, value="right").pack(side="left")
-        Tooltip(btn_frame, "Which button to hold while drawing. Some apps use left, some use right for drawing tools.")
+        self._fixed_row = ctk.CTkFrame(body, fg_color="transparent")
+        self._fixed_row.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(6, 0))
 
-        row += 1
-        ttk.Label(self._frame_draw, text="Delay before start (s):").grid(row=row, column=0, sticky="w", **pad)
-        delay_entry = ttk.Entry(self._frame_draw, textvariable=self.delay_before, width=8)
-        delay_entry.grid(row=row, column=1, sticky="w", **pad)
-        Tooltip(delay_entry, "Seconds of countdown before drawing begins. Use this time to switch to your target application and position your mouse.")
+        validate = (self.root.register(lambda text: text in ("", "-") or text.lstrip("-").isdigit()), "%P")
 
-        row += 1
-        ttk.Button(self._frame_draw, text="Set Canvas", command=self._pick_canvas).grid(
-            row=row, column=0, columnspan=3, sticky="w", **pad)
+        for column, (axis, var) in enumerate((("X", self.offset_x), ("Y", self.offset_y))):
+            ctk.CTkLabel(self._fixed_row, text=axis, text_color=theme.MUTED, width=14).grid(row=0, column=column * 2, padx=(0 if column == 0 else 10, 6))
+            entry = ctk.CTkEntry(self._fixed_row, textvariable=var, width=70, height=30, justify="right", font=theme.mono_font(12), validate="key", validatecommand=validate)
+            entry.grid(row=0, column=column * 2 + 1)
+            Tooltip(entry, f"Absolute screen pixel {axis} of the drawing's top-left corner.")
 
-        self._frame_draw.columnconfigure(1, weight=1)
+        button(body, "Pick area on screen…", self._pick_canvas, height=30).grid(row=7, column=0, columnspan=3, sticky="ew", pady=(12, 0))
 
-        # ── Status ──
-        self.lbl_status = ttk.Label(self.root, text="Load an image to begin.")
-        self.lbl_status.pack(**pad)
-        self.lbl_contours = ttk.Label(self.root, text="")
-        self.lbl_contours.pack(**pad)
-        self.lbl_crop = ttk.Label(self.root, text="")
-        self.lbl_crop.pack(**pad)
+    def _build_actions(self, side):
+        actions = ctk.CTkFrame(side, fg_color="transparent", corner_radius=0)
+        actions.grid(row=1, column=0, sticky="ew", padx=(10, 16), pady=(4, 14))
+        actions.columnconfigure(0, weight=1)
 
-        # ── Buttons ──
-        self._frame_btn = ttk.Frame(self.root)
-        self._frame_btn.pack(fill="x", **pad)
-        ttk.Button(self._frame_btn, text="Preview", command=self._open_preview).pack(side="left", **pad)
-        ttk.Checkbutton(self._frame_btn, text="Live", variable=self.auto_preview).pack(side="left", **pad)
-        ttk.Button(self._frame_btn, text="Start Drawing", command=self._start_drawing).pack(side="left", **pad)
-        ttk.Button(self._frame_btn, text="Keybinds", command=self._show_keybinds).pack(side="left", **pad)
-        ttk.Button(self._frame_btn, text="About", command=self._show_about).pack(side="left", **pad)
-        ttk.Button(self._frame_btn, text="Quit", command=self._quit).pack(side="right", **pad)
+        self._btn_start = button(actions, "Start drawing", self._on_start_button, kind="primary", height=42, font=theme.font(14, "bold"))
+        self._btn_start.grid(row=0, column=0, sticky="ew")
+        self._btn_cancel = button(actions, "Cancel", self._cancel, kind="danger", height=42, width=96)
+        self._btn_cancel.grid(row=0, column=1, padx=(8, 0))
+        self._btn_cancel.grid_remove()
 
-    # ── Image Loading, Crop, Auto-propose ──
+        self._progress_bar = ctk.CTkProgressBar(actions, height=6)
+        self._progress_bar.set(0)
+        self._progress_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self._progress_bar.grid_remove()
+
+        hints = ctk.CTkFrame(actions, fg_color="transparent")
+        hints.grid(row=2, column=0, columnspan=2, pady=(10, 0))
+        self._kbd_start = kbd(hints, key_label(self._start_key_name))
+        self._kbd_start.pack(side="left")
+        ctk.CTkLabel(hints, text=" start / pause", text_color=theme.MUTED, font=theme.font(12)).pack(side="left", padx=(0, 14))
+        self._kbd_stop = kbd(hints, key_label(self._stop_key_name))
+        self._kbd_stop.pack(side="left")
+        ctk.CTkLabel(hints, text=" cancel", text_color=theme.MUTED, font=theme.font(12)).pack(side="left")
+
+    def _build_preview(self):
+        pane = Card(self.root)
+        pane.grid(row=2, column=1, sticky="nsew", padx=(8, 16), pady=(10, 14))
+        pane.rowconfigure(1, weight=1)
+        pane.body.grid_forget()
+
+        head = ctk.CTkFrame(pane, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 8))
+        head.columnconfigure(4, weight=1)
+        ctk.CTkLabel(head, text="Preview", font=theme.font(14, "bold")).grid(row=0, column=0, padx=(0, 12))
+        self._pill_contours = Pill(head)
+        self._pill_contours.grid(row=0, column=1, padx=(0, 6))
+        self._pill_points = Pill(head)
+        self._pill_points.grid(row=0, column=2, padx=(0, 6))
+        self._pill_size = Pill(head)
+        self._pill_size.grid(row=0, column=3)
+
+        live = ctk.CTkFrame(head, fg_color="transparent")
+        live.grid(row=0, column=5, padx=(8, 4))
+        live_label = ctk.CTkLabel(live, text="Live", text_color=theme.TEXT_2)
+        live_label.pack(side="left", padx=(0, 6))
+        Tooltip(live_label, "Re-detect contours automatically when a setting changes.")
+        Toggle(live, self.auto_preview).pack(side="left")
+        button(head, "Refresh", lambda: self._refresh_preview(), kind="ghost", width=74, height=28).grid(row=0, column=6, padx=2)
+        button(head, "Pop out", self._open_preview, kind="ghost", width=74, height=28).grid(row=0, column=7)
+
+        well = ctk.CTkFrame(pane, fg_color=theme.SURFACE_2, corner_radius=theme.RADIUS)
+        well.grid(row=1, column=0, sticky="nsew", padx=16)
+        self._preview_view = PreviewCanvas(well)
+        self._preview_view.canvas.pack(fill="both", expand=True, padx=6, pady=6)
+
+        canvas = self._preview_view.canvas
+        self._empty_open = button(canvas, "Open image…", self._browse, kind="primary", width=130, bg_color=theme.SURFACE_2)
+        self._empty_paste = button(canvas, "Paste", self._paste_from_clipboard, width=90, bg_color=theme.SURFACE_2)
+        self._empty_svg = button(canvas, "Open SVG…", self._browse_svg, kind="primary", width=120, bg_color=theme.SURFACE_2)
+
+        foot = ctk.CTkFrame(pane, fg_color="transparent")
+        foot.grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 12))
+        foot.columnconfigure(0, weight=1)
+        self.lbl_status = ctk.CTkLabel(foot, text="Load an image to begin.", text_color=theme.TEXT_2, anchor="w", justify="left")
+        self.lbl_status.grid(row=0, column=0, sticky="ew")
+        foot.bind("<Configure>", lambda e: self.lbl_status.configure(wraplength=max(200, e.width - 20)))
+
+    def _bind_keys(self):
+        self.root.bind_all("<Escape>", lambda e: self._cancel())
+        self.root.bind_all("<Control-v>", self._on_ctrl_v)
+        self.root.bind_all("<Control-o>", lambda e: self._browse())
+        self.root.protocol("WM_DELETE_WINDOW", self._quit)
+
+        if sys.platform == "darwin":
+            self.root.bind_all("<Command-v>", self._on_ctrl_v)
+            self.root.bind_all("<Command-o>", lambda e: self._browse())
+            self.root.createcommand("tk::mac::Quit", self._quit)
+            self.root.createcommand("tkAboutDialog", self._show_about)
+            self.root.createcommand("tk::mac::ShowPreferences", self._show_keybinds)
 
     def _browse(self):
-        path = filedialog.askopenfilename(
-            filetypes=[
-                ("All supported", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp *.svg"),
-                ("Images", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp"),
-                ("SVG", "*.svg"),
-                ("All", "*.*"),
-            ]
-        )
+        path = ask_open_filename(self.root, "Open image or SVG", IMAGE_TYPES)
+
         if not path:
             return
+
         if path.lower().endswith(".svg"):
             self._load_svg(path)
         else:
             self._load_image(path)
 
     def _load_image(self, path):
-        self.image_path = path
-        self.gray_image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        if self.gray_image is None:
-            self.lbl_status.config(text="Error: could not read image.")
+        gray = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+
+        if gray is None:
+            self._update_status("Could not read that image.")
             return
-        self.lbl_file.config(text=path.split("/")[-1])
+
+        self._set_mode("image")
+        self.image_path = path
+        self.gray_image = gray
+        self.lbl_file.configure(text=os.path.basename(path))
         self._image_bounds = None
         self._do_crop()
 
@@ -544,57 +730,60 @@ class Inkspire:
         try:
             contours = load_svg(path)
         except Exception as e:
-            self.lbl_status.config(text=f"SVG error: {e}")
-            return
-        if not contours:
-            self.lbl_status.config(text="No paths found in SVG.")
+            self._update_status(f"SVG error: {e}")
             return
 
+        if not contours:
+            self._update_status("No paths found in SVG.")
+            return
+
+        self._set_mode("textsvg")
         all_pts = np.vstack(contours)
         mins = all_pts.min(axis=0)
         maxs = all_pts.max(axis=0)
         self._textsvg_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
         self._textsvg_contours = [c - mins for c in contours]
+        self._svg_name = os.path.basename(path)
+        self._lbl_svg.configure(text=f"{self._svg_name}  ·  {self._textsvg_bounds[0]:.0f} × {self._textsvg_bounds[1]:.0f}", text_color=theme.TEXT)
 
-        total_points = sum(len(c) for c in self._textsvg_contours)
-        self.lbl_contours.config(text=f"Contours: {len(self._textsvg_contours)}, Total points: {total_points}")
-        self.lbl_crop.config(text=f"SVG: {self._textsvg_bounds[0]:.0f}x{self._textsvg_bounds[1]:.0f}")
         self._update_status(f"Loaded SVG with {len(self._textsvg_contours)} paths.")
-        if self.auto_preview.get():
-            self._open_preview()
+        self._refresh_preview(extract=False)
 
     def _recrop(self):
         if self.gray_image is None:
-            self.lbl_status.config(text="No image loaded.")
+            self._update_status("No image loaded.")
             return
+
         self._do_crop()
 
     def _do_crop(self):
         auto_rect = detect_art_bounds(self.gray_image)
         dialog = CropDialog(self.root, self.gray_image, auto_rect=auto_rect)
+
         if dialog.result == "CANCEL":
             return
 
         h, w = self.gray_image.shape
+
         if dialog.result is None:
             self.cropped_image = self.gray_image.copy()
-            self.lbl_crop.config(text=f"Crop: full image ({w}x{h}px)")
+            self.lbl_crop.configure(text=f"Full image · {w} × {h} px")
         else:
             x, y, cw, ch = dialog.result
             self.cropped_image = self.gray_image[y:y + ch, x:x + cw].copy()
-            self.lbl_crop.config(text=f"Crop: ({x},{y}) {cw}x{ch}px from {w}x{h}px original")
+            self.lbl_crop.configure(text=f"Cropped to {cw} × {ch} px at ({x}, {y}) of {w} × {h}")
 
         if not self._restoring_session:
             self._apply_suggested()
-        self._extract_contours()
-        if self.auto_preview.get():
-            self._open_preview()
+
+        self._refresh_preview()
 
     def _apply_suggested(self):
         if self.cropped_image is None:
             return
+
         s = compute_suggested(self.cropped_image)
-        self.btn_suggested.config(state="normal")
+        self.btn_suggested.configure(state="normal")
 
         self.detect_mode.set(s["detect_mode"])
         self.threshold.set(s["threshold"])
@@ -611,18 +800,15 @@ class Inkspire:
         self.root.after(10, self._sync_all_widgets)
         self.root.after(10, self._update_mode_visibility)
 
-        self.lbl_status.config(
-            text=f"Suggested: mode={s['detect_mode']}, thresh={s['threshold']}, "
-                 f"blur={s['blur_radius']}, min_len={s['min_contour_len']}, "
-                 f"eps={s['simplify']} (ink:{s['ink_ratio']:.1%} lap:{s['lap_var']:.0f})")
-
-    # ── Contour Extraction ──
+        self._update_status(
+            f"Suggested settings: {s['detect_mode']}, threshold {s['threshold']}, blur {s['blur_radius']}, "
+            f"min length {s['min_contour_len']}, simplify {s['simplify']} (ink {s['ink_ratio']:.1%}, sharpness {s['lap_var']:.0f}).")
 
     def _extract_contours(self):
         if self.cropped_image is None:
             return
 
-        self.contours = extract_contours(
+        self._image_contours = extract_contours(
             self.cropped_image,
             mode=self.detect_mode.get(),
             threshold=self.threshold.get(),
@@ -637,109 +823,157 @@ class Inkspire:
             use_skeleton=self.use_skeleton.get(),
         )
 
-        total_points = sum(len(c) for c in self.contours)
-        self.lbl_contours.config(text=f"Contours: {len(self.contours)}, Total points: {total_points}")
-
-    def _skeletonize(self, binary):
-        return skeletonize(binary)
-
-    # ── Preview ──
-
     def _open_preview(self):
-        if self.input_mode == "image":
-            self._extract_contours()
-        if not self.contours:
-            self.lbl_status.config(text="No contours found. Adjust parameters.")
-            return
         if self.preview is None or not self.preview.is_open():
             self.preview = PreviewWindow(self.root)
-        if self.input_mode == "image" and self.cropped_image is not None:
-            shape = self.cropped_image.shape[:2]
-        elif self.contour_bounds:
-            shape = (int(self.contour_bounds[1]), int(self.contour_bounds[0]))
-        else:
-            all_pts = np.vstack(self.contours)
-            maxs = all_pts.max(axis=0)
-            shape = (int(maxs[1]) + 1, int(maxs[0]) + 1)
-        self.preview.render(self.contours, self.scale.get(), shape)
+
+        self._refresh_preview(extract=False)
+
+        if not self.contours:
+            self.preview.render([], 1.0, (1, 1))
+
         self.preview.focus()
 
-    def _preview_text_svg(self):
-        self._on_text_change()
-        self._open_preview()
-
     def _browse_svg(self):
-        path = filedialog.askopenfilename(
-            filetypes=[("SVG files", "*.svg"), ("All", "*.*")]
-        )
+        path = ask_open_filename(self.root, "Open SVG", [("SVG files", "*.svg"), ("All files", "*.*")])
+
         if path:
             self._load_svg(path)
 
-    # ── Keybinds ──
+    def _on_appearance_change(self, mode):
+        self._preview_view.refresh_theme()
+        self._font_picker.refresh_theme()
+
+        if self.preview and self.preview.is_open():
+            self.preview.refresh_theme()
 
     def _show_keybinds(self):
         self._polling_paused = True
         dlg = KeybindsDialog(self.root, self.config, self._on_keybind_update)
-        dlg.win.bind("<Destroy>", lambda e: setattr(self, "_polling_paused", False))
+        dlg.win.bind("<Destroy>", lambda e: setattr(self, "_polling_paused", False) if e.widget is dlg.win else None)
 
     def _on_keybind_update(self, config_key, key_name):
         keycode = resolve_keycode(key_name)
-        if not keycode:
-            self._update_status(f"Key '{key_name}' not supported.")
-            return
+
+        if keycode is None:
+            self._update_status(f"Key '{key_name}' is not supported.")
+            return False
+
         if config_key == "start_key":
             self._start_keycode = keycode
+            self._start_key_name = key_name
+            self._kbd_start.configure(text=key_label(key_name))
         elif config_key == "stop_key":
-            stop_check = (lambda: is_key_pressed(keycode))
-            self.draw_engine._cancel_check = stop_check
-        self._update_status(f"Keybind set: {config_key} = {key_name}")
+            self.draw_engine._cancel_check = lambda: is_key_pressed(keycode)
+            self._stop_key_name = key_name
+            self._kbd_stop.configure(text=key_label(key_name))
 
-    # ── Drawing ──
+        self._update_status(f"{'Start / pause' if config_key == 'start_key' else 'Cancel'} key set to {key_label(key_name)}.")
 
-    def _poll_start_key(self):
-        if getattr(self, "_polling_paused", False):
-            self.root.after(30, self._poll_start_key)
+        return True
+
+    def _poll(self):
+        if not self._polling_paused and self._start_keycode is not None:
+            pressed = is_key_pressed(self._start_keycode)
+
+            if pressed and not self._start_key_was_pressed:
+                self._on_start_button()
+
+            self._start_key_was_pressed = pressed
+
+        self._sync_engine_state()
+        self.root.after(30, self._poll)
+
+    def _on_start_button(self):
+        state = self.draw_engine.state
+
+        if state == "idle":
+            self._start_drawing()
+        elif state == "drawing":
+            self.draw_engine.pause()
+        elif state == "paused":
+            self.draw_engine.resume()
+
+    def _sync_engine_state(self):
+        state = self.draw_engine.state
+        done, total = self._progress
+
+        if state != "idle" and total:
+            self._progress_bar.set(done / total)
+
+        if state == self._engine_state:
             return
-        pressed = is_key_pressed(self._start_keycode)
-        if pressed and not self._start_key_was_pressed:
-            state = self.draw_engine.state
-            if state == "idle":
-                self._start_drawing()
-            elif state == "drawing":
-                self.draw_engine.pause()
-            elif state == "paused":
-                self.draw_engine.resume()
-        self._start_key_was_pressed = pressed
-        self.root.after(30, self._poll_start_key)
+
+        self._engine_state = state
+        start = key_label(self._start_key_name)
+
+        if state == "idle":
+            self._btn_start.configure(text="Start drawing")
+            self._btn_cancel.grid_remove()
+            self._progress_bar.grid_remove()
+            self._state_pill.set("Ready")
+        elif state == "drawing":
+            self._btn_start.configure(text=f"Pause  ({start})")
+            self._btn_cancel.grid()
+            self._progress_bar.grid()
+            self._state_pill.set("Drawing", "accent")
+        else:
+            self._btn_start.configure(text=f"Resume  ({start})")
+            self._state_pill.set("Paused", "warn")
+
+    def _on_progress(self, done, total):
+        self._progress = (done, total)
 
     def _start_drawing(self):
+        if accessibility.needs_permission() and not accessibility.is_trusted():
+            self._show_accessibility()
+            return
+
         if not self.contours and self.input_mode == "image":
             self._extract_contours()
+
         if not self.contours:
-            self.lbl_status.config(text="No contours to draw.")
+            self._update_status("No contours to draw. Load an image, an SVG or some text first.")
             return
+
         draw_contours = list(self.contours)
+
         if self.optimize_path.get() and len(draw_contours) > 1:
             draw_contours, reduction = optimize_path(draw_contours)
             self._update_status(f"Optimized: travel reduced by {reduction:.0%}")
+
         params = {
             "mouse_button": self.mouse_button.get(),
             "speed": self.speed.get(),
-            "offset_x": self.offset_x.get(),
-            "offset_y": self.offset_y.get(),
+            "offset_x": self._int(self.offset_x, 200),
+            "offset_y": self._int(self.offset_y, 200),
             "scale": self.scale.get(),
             "relative_to_mouse": self.relative_offset.get(),
             "delay_before_start": self.delay_before.get(),
+            "start_key_label": key_label(self._start_key_name),
+            "stop_key_label": key_label(self._stop_key_name),
         }
+
+        self._progress = (0, sum(len(c) for c in draw_contours))
+        self._progress_bar.set(0)
+
         threading.Thread(target=self.draw_engine.run, args=(draw_contours, params), daemon=True).start()
 
+    @staticmethod
+    def _int(var, fallback):
+        try:
+            return int(var.get())
+        except (ValueError, tk.TclError):
+            return fallback
+
     def _on_ctrl_v(self, event):
-        if isinstance(event.widget, tk.Text):
-            return  # let the text widget handle its own paste
+        if isinstance(event.widget, (tk.Text, tk.Entry)):
+            return
+
         self._paste_from_clipboard()
 
     def _update_status(self, text):
-        self.root.after(0, lambda: self.lbl_status.config(text=text))
+        self.root.after(0, lambda: self.lbl_status.configure(text=text))
 
     def _cancel(self):
         self.draw_engine.cancel()
@@ -747,58 +981,120 @@ class Inkspire:
     def _show_about(self):
         AboutDialog(self.root)
 
+    def _check_accessibility(self):
+        if accessibility.is_trusted():
+            self._access_button.grid_remove()
+            return
+
+        self._access_button.grid()
+
+        if not self.config.get("accessibility_prompted"):
+            self.config["accessibility_prompted"] = True
+            save_config(self.config)
+            self._show_accessibility()
+
+        self.root.after(3000, self._check_accessibility)
+
+    def _show_accessibility(self):
+        if self._accessibility_dialog and self._accessibility_dialog.win.winfo_exists():
+            self._accessibility_dialog.win.lift()
+            return
+
+        self._accessibility_dialog = AccessibilityDialog(self.root, on_granted=self._access_button.grid_remove)
+
     def _paste_from_clipboard(self):
         img = get_clipboard_image()
 
         if img is None:
-            self._update_status("No image in clipboard.")
+            self._update_status("No image in the clipboard.")
             return
 
         rgb = np.array(img.convert("RGB"))
+        self._set_mode("image")
         self.gray_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         self.image_path = "(clipboard)"
-        self.lbl_file.config(text="(pasted from clipboard)")
+        self.lbl_file.configure(text="Pasted image")
         self._do_crop()
 
-    def _populate_fonts(self):
-        self._font_list = discover_fonts()
-        families = sorted(set(f["family"] for f in self._font_list))
-        self._font_combo["values"] = families
-        if families:
-            self._font_combo.current(0)
-            self._on_font_change()
+    def _populate_fonts(self, refresh=False):
+        if self._fonts_loading:
+            return
+
+        self._fonts_loading = True
+        self._lbl_font.configure(text="Loading fonts…")
+
+        def work():
+            fonts = discover_fonts(refresh=refresh)
+
+            try:
+                self.root.after(0, lambda: self._apply_fonts(fonts))
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_fonts(self, fonts):
+        self._fonts_loading = False
+        self._font_list = fonts
+        families = sorted(set(f["family"] for f in fonts), key=str.lower)
+        self._font_picker.set_families(families)
+
+        if self.font_path:
+            current = next((f["family"] for f in fonts if f["path"] == self.font_path), None)
+
+            if current:
+                self._font_picker.select(current)
+
+            self._lbl_font.configure(text=current or os.path.basename(self.font_path))
+
+            return
+
+        if not families:
+            self._lbl_font.configure(text="No fonts found. Use Font file…")
+            return
+
+        default = next((f for f in PREFERRED_FONTS if f in families), families[0])
+        self._font_picker.select(default)
+        self._on_font_change(default)
 
     def _browse_font(self):
-        path = filedialog.askopenfilename(
-            filetypes=[("Font files", "*.ttf *.otf"), ("All", "*.*")]
-        )
+        path = ask_open_filename(self.root, "Open font", [("Font files", "*.ttf *.otf"), ("All files", "*.*")])
+
         if path:
             self.font_path = path
-            name = path.split("/")[-1].split("\\")[-1]
-            self._font_combo.set(name)
+            self._lbl_font.configure(text=os.path.basename(path))
             self._on_text_change()
 
-    def _on_font_change(self):
-        selected = self._font_combo.get()
-        for f in self._font_list:
-            if f["family"] == selected:
-                self.font_path = f["path"]
-                break
+    def _on_font_change(self, family):
+        path = regular_path(self._font_list, family)
+
+        if not path:
+            return
+
+        self.font_path = path
+        self._lbl_font.configure(text=family)
         self._on_text_change()
 
+    def _schedule_text_change(self):
+        if self._text_timer is not None:
+            self.root.after_cancel(self._text_timer)
+
+        self._text_timer = self.root.after(150, self._on_text_change)
+
     def _on_text_change(self):
+        self._text_timer = None
         text = self._text_box.get("1.0", "end-1c").strip()
+
         if not text or not self.font_path:
             return
 
         max_w = None
-        if self._textsvg_bounds:
+
+        if self._textsvg_bounds and self._svg_name:
             max_w = self._textsvg_bounds[0]
 
         try:
-            contours = render_text(
-                text, self.font_path, self.font_size.get(),
-                max_width=max_w)
+            contours = render_text(text, self.font_path, self.font_size.get(), max_width=max_w)
         except Exception as e:
             self._update_status(f"Text error: {e}")
             return
@@ -812,53 +1108,65 @@ class Inkspire:
         maxs = all_pts.max(axis=0)
         self._textsvg_bounds = (maxs[0] - mins[0], maxs[1] - mins[1])
         self._textsvg_contours = [c - mins for c in contours]
+        self._svg_name = None
+        self._lbl_svg.configure(text="No SVG loaded", text_color=theme.MUTED)
 
         total_points = sum(len(c) for c in self._textsvg_contours)
-        self.lbl_contours.config(text=f"Contours: {len(self._textsvg_contours)}, Total points: {total_points}")
-        self.lbl_crop.config(text=f"Text: {self._textsvg_bounds[0]:.0f}x{self._textsvg_bounds[1]:.0f}px")
-        self._update_status(f"Text rendered: {len(self._textsvg_contours)} contours, {total_points} points")
-
-        if self.preview and self.preview.is_open():
-            shape = (int(self._textsvg_bounds[1]), int(self._textsvg_bounds[0]))
-            self.preview.render(self._textsvg_contours, self.scale.get(), shape)
+        self._update_status(f"Text rendered: {len(self._textsvg_contours)} contours, {total_points} points.")
+        self._refresh_preview(extract=False)
 
     def _pick_canvas(self):
-        if not self.contours and self.cropped_image is None:
-            self._update_status("Load an image or SVG first.")
+        if self._current_shape() is None or not self.contours:
+            self._update_status("Load an image, an SVG or some text first.")
             return
+
         CanvasPicker(self.root, self._apply_canvas_target)
 
     def _apply_canvas_target(self, x, y, width, height):
-        self.offset_x.set(x)
-        self.offset_y.set(y)
-        self.relative_offset.set(False)
-        if self.cropped_image is not None:
-            img_h, img_w = self.cropped_image.shape[:2]
-        elif self.contour_bounds:
-            img_w, img_h = self.contour_bounds
-        else:
+        shape = self._current_shape()
+
+        if shape is None:
             return
-        scale_x = width / img_w
-        scale_y = height / img_h
-        self.scale.set(round(min(scale_x, scale_y), 3))
-        self._update_status(f"Canvas set: {width}x{height} at ({x},{y}), scale={self.scale.get():.3f}")
+
+        img_h, img_w = shape
+        self.offset_x.set(str(x))
+        self.offset_y.set(str(y))
+        self.relative_offset.set(False)
+        self.scale.set(round(min(width / img_w, height / img_h), 3))
+        self._widgets["scale"].sync()
+        self._update_status(f"Canvas set: {width} × {height} at ({x}, {y}), scale {self.scale.get():.3f}.")
+
+    def _self_test(self):
+        square = [np.array([[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]], dtype=np.float64)]
+        render_preview(square, 1.0, (100, 100), 320, 240)
+        self._preview_view.show(square, 1.0, (100, 100))
+        self.root.update()
+        AboutDialog(self.root).win.destroy()
+
+        print(f"Inkspire self-test OK (Tk {self.root.tk.call('info', 'patchlevel')}, {ctk.get_appearance_mode()} mode)")
+        self.root.destroy()
 
     def _quit(self):
+        offset_x = self._int(self.offset_x, 200)
+        offset_y = self._int(self.offset_y, 200)
+
         self.config.update({
             "scale": self.scale.get(),
-            "offset_x": self.offset_x.get(),
-            "offset_y": self.offset_y.get(),
+            "offset_x": offset_x,
+            "offset_y": offset_y,
             "speed": self.speed.get(),
             "mouse_button": self.mouse_button.get(),
             "delay_before": self.delay_before.get(),
             "relative_offset": self.relative_offset.get(),
             "auto_preview": self.auto_preview.get(),
             "optimize_path": self.optimize_path.get(),
+            "start_key": self._start_key_name,
+            "stop_key": self._stop_key_name,
         })
         save_config(self.config)
         save_session({
             "source_path": self.image_path,
-            "input_tab": self._notebook.index("current"),
+            "input_tab": 0 if self.input_mode == "image" else 1,
             "detection_settings": {
                 "mode": self.detect_mode.get(),
                 "threshold": self.threshold.get(),
@@ -874,8 +1182,8 @@ class Inkspire:
             },
             "drawing_settings": {
                 "scale": self.scale.get(),
-                "offset_x": self.offset_x.get(),
-                "offset_y": self.offset_y.get(),
+                "offset_x": offset_x,
+                "offset_y": offset_y,
                 "speed": self.speed.get(),
                 "mouse_button": self.mouse_button.get(),
                 "delay_before": self.delay_before.get(),
@@ -887,12 +1195,13 @@ class Inkspire:
             "font_path": self.font_path,
             "font_size": self.font_size.get(),
         })
+
         self.root.destroy()
         sys.exit(0)
 
 
 def main():
-    Inkspire()
+    Inkspire(self_test="--self-test" in sys.argv)
 
 
 if __name__ == "__main__":

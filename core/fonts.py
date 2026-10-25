@@ -3,19 +3,21 @@
 import sys
 from pathlib import Path
 
-__all__ = ["discover_fonts"]
+__all__ = ["discover_fonts", "regular_path"]
 
 _cache = None
+_REGULAR_STYLES = ("regular", "book", "normal", "roman", "medium")
 
 
-def discover_fonts() -> list[dict]:
+def discover_fonts(refresh=False) -> list[dict]:
     """Scan system font directories and return available fonts.
 
     Returns list of dicts: [{"family": str, "style": str, "path": str}, ...]
-    Sorted by family name. Cached after first call.
+    Sorted by family name. Cached after first call unless refresh is set.
     """
     global _cache
-    if _cache is not None:
+
+    if _cache is not None and not refresh:
         return _cache
 
     dirs = _font_dirs()
@@ -24,22 +26,44 @@ def discover_fonts() -> list[dict]:
 
     for d in dirs:
         p = Path(d)
+
         if not p.is_dir():
             continue
+
         for f in p.rglob("*"):
             if f.suffix.lower() not in (".ttf", ".otf"):
                 continue
+
             path_str = str(f)
+
             if path_str in seen:
                 continue
+
             seen.add(path_str)
             info = _read_font_name(f)
+
             if info:
                 fonts.append(info)
 
     fonts.sort(key=lambda x: (x["family"].lower(), x["style"].lower()))
     _cache = fonts
+
     return fonts
+
+
+def regular_path(fonts: list[dict], family: str) -> str | None:
+    """Path of the upright, regular-weight face of a family, else its first face."""
+    faces = [f for f in fonts if f["family"] == family]
+
+    if not faces:
+        return None
+
+    for style in _REGULAR_STYLES:
+        for face in faces:
+            if face["style"].lower() == style:
+                return face["path"]
+
+    return faces[0]["path"]
 
 
 def _font_dirs() -> list[str]:

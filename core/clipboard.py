@@ -5,6 +5,8 @@ import io
 import sys
 from PIL import Image
 
+from core.proc import system_env
+
 __all__ = ["get_clipboard_image"]
 
 
@@ -13,44 +15,44 @@ def get_clipboard_image():
 
     Returns a PIL Image or None if no image is available.
     """
-    # PIL ImageGrab works natively on Windows and on Linux with xclip/wl-paste
+    # PIL ImageGrab works natively on Windows and macOS, and on Linux with xclip/wl-paste
     try:
         from PIL import ImageGrab
+
         img = ImageGrab.grabclipboard()
+
         if img is not None:
             return img
     except Exception:
         pass
 
-    if sys.platform == "win32":
+    if sys.platform in ("win32", "darwin"):
         return None
 
-    # Linux fallbacks via subprocess
-
-    # xclip
     for mime in ["image/png", "image/bmp", "image/jpeg"]:
         try:
             data = subprocess.check_output(
                 ["xclip", "-selection", "clipboard", "-t", mime, "-o"],
-                stderr=subprocess.DEVNULL)
+                stderr=subprocess.DEVNULL, env=system_env())
+
             return Image.open(io.BytesIO(data))
         except Exception:
             continue
 
-    # xsel
     try:
         data = subprocess.check_output(
             ["xsel", "--clipboard", "--output"],
-            stderr=subprocess.DEVNULL)
+            stderr=subprocess.DEVNULL, env=system_env())
+
         return Image.open(io.BytesIO(data))
     except Exception:
         pass
 
-    # wl-paste (Wayland)
     try:
         data = subprocess.check_output(
             ["wl-paste", "--type", "image/png"],
-            stderr=subprocess.DEVNULL)
+            stderr=subprocess.DEVNULL, env=system_env())
+
         return Image.open(io.BytesIO(data))
     except Exception:
         pass
